@@ -1,0 +1,121 @@
+name: Go CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    if: github.repository == 'OneBusAway/maglev'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Check go fmt
+        run: |
+          unformatted=$(go fmt ./...)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not formatted:"
+            echo "$unformatted"
+            echo ""
+            echo "To fix, run locally: go fmt ./..."
+            exit 1
+          fi
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      CGO_ENABLED: 1
+      SONAR_CI_ANALYSIS_ENABLED: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go ${{ matrix.os }}
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Check OpenAPI spec is up to date with upstream
+        if: github.event_name == 'pull_request'
+        run: bash scripts/check-openapi.sh
+        shell: bash
+
+      - name: Run tests (fast mode)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -v -tags='sqlite_fts5 sqlite_math_functions' -coverprofile=profile.cov -timeout 40m ./...
+        env:
+          CGO_ENABLED: 1
+        shell: bash
+
+      - name: Run tests (compatible mode)
+        if: matrix.os == 'windows-latest'
+        run: go test -v -tags=purego -coverprofile=profile.cov -timeout 40m ./...
+        env:
+          CGO_ENABLED: 0
+        shell: bash
+
+      - name: Enforce Coverage Threshold
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          # Strip ALL auto-generated SQL code and test mocks from coverage math
+          grep -v "query.sql.go" profile.cov | grep -v "gtfsdb/db.go" | grep -v "gtfsdb/models.go" | grep -v "_mock.go" > clean_profile.cov
+
+          COVERAGE=$(go tool cover -func=clean_profile.cov | grep total: | grep -Eo '[0-9]+\.?[0-9]*')
+          echo "Current Test Coverage is: $COVERAGE%"
+
+          if [ -z "$COVERAGE" ]; then
+            echo "ERROR: Could not parse coverage percentage"
+            exit 1
+          fi
+
+          if [ "$(echo "$COVERAGE 75.0" | awk '{print ($1 < $2)}')" = "1" ]; then
+            echo "Coverage dropped below 75% threshold!"
+            exit 1
+          fi
+        shell: bash
+
+      - name: SonarQube Scan
+        if: matrix.os == 'ubuntu-latest' && github.repository == 'OneBusAway/maglev' && env.SONAR_CI_ANALYSIS_ENABLED == 'true'
+        uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  test-race:
+    name: Race Detector (Targeted)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run race detector on concurrent packages
+        run: go test -race -v -tags='sqlite_fts5 sqlite_math_functions' -timeout 20m ./internal/gtfs/...
+        shell: bash

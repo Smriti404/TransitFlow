@@ -1,0 +1,49 @@
+package models
+
+type Trip struct {
+	BlockID        string `json:"blockId"`
+	DirectionID    string `json:"directionId"`
+	ID             string `json:"id"`
+	RouteID        string `json:"routeId"`
+	ServiceID      string `json:"serviceId"`
+	ShapeID        string `json:"shapeId"`
+	TripHeadsign   string `json:"tripHeadsign"`
+	TripShortName  string `json:"tripShortName"`
+	RouteShortName string `json:"routeShortName"`
+	PeakOffPeak    int64  `json:"peakOffpeak"`
+	TimeZone       string `json:"timeZone"`
+}
+
+type TripResponse struct {
+	*Trip
+}
+
+func NewTripResponse(trip *Trip, timeZone string, peakOffPeak int) *TripResponse {
+	return &TripResponse{
+		Trip: trip,
+	}
+}
+
+func NewTripReference(id, routeID, serviceID, headSign, shortName string, directionID string, blockID, shapeID string) *Trip {
+	return &Trip{
+		BlockID:        blockID,
+		DirectionID:    directionID,
+		ID:             id,
+		PeakOffPeak:    0,
+		RouteID:        routeID,
+		RouteShortName: shortName,
+		ServiceID:      serviceID,
+		ShapeID:        shapeID,
+		TimeZone:       "",
+		TripHeadsign:   headSign,
+		TripShortName:  shortName,
+	}
+}
+
+type TripsSchedule struct {
+	Frequency      *Frequency `json:"frequency"`
+	NextTripId     string     `json:"nextTripId"`
+	PreviousTripId string     `json:"previousTripId"`
+	StopTimes      []StopTime `json:"stopTimes"`
+	TimeZone       string     `json:"timeZone"`
+}

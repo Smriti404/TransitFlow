@@ -1,0 +1,485 @@
+<img src="marketing/transitflow-header.png" alt="TransitFlow" width="600">
+
+# TransitFlow
+
+A complete rewrite of the OneBusAway (OBA) REST API server in Golang.
+
+## Getting Started
+
+### Option 1: Native Go Installation
+
+1. Install Go 1.24.2 or later.
+2. Copy `config.example.json` to `config.json` and fill in the required values.
+3. Run `make run` to build and start the server.
+4. Open your browser and navigate to `http://localhost:4000/healthz` to verify the server works.
+
+### Option 2: Docker (Recommended)
+
+Docker provides a consistent development environment across all platforms.
+
+**Quick Start:**
+
+```bash
+# Create docker config from template
+cp config.docker.example.json config.docker.json
+# Edit config.docker.json with your settings
+
+# Build and run with Docker Compose (recommended)
+# Uses config.docker.json which stores data in /app/data/ for persistence
+docker-compose up
+
+# Or build and run manually
+docker build -t maglev .
+docker run -p 4000:4000 -v $(pwd)/config.docker.json:/app/config.json:ro -v maglev-data:/app/data maglev
+
+```
+
+**Verify it works:**
+
+```bash
+curl http://localhost:4000/healthz
+
+```
+
+**Development with live reload:**
+
+```bash
+docker-compose -f docker-compose.dev.yml up
+
+```
+
+See the [Docker](#docker) section below for more details.
+
+## Configuration
+
+Maglev supports two ways to configure the server: command-line flags or a JSON configuration file.
+
+### Command-line Flags (Default)
+
+Run the server with command-line flags:
+
+```bash
+./bin/transitflow -port 8080 -env production -api-keys "key1,key2" -rate-limit 50
+
+```
+
+### JSON Configuration File
+
+Alternatively, use a JSON configuration file with the `-f` flag:
+
+```bash
+./bin/transitflow -f config.json
+
+```
+
+An example configuration file is provided as `config.example.json`. You can copy and modify it:
+
+```bash
+cp config.example.json config.json
+# Edit config.json with your settings
+./bin/transitflow -f config.json
+
+```
+
+Example `config.json`:
+
+```json
+{
+  "port": 8080,
+  "env": "production",
+  "api-keys": ["key1", "key2", "key3"],
+  "rate-limit": 50,
+  "log-level": "info",
+  "log-format": "json",
+  "gtfs-static-feed": {
+    "url": "https://example.com/gtfs.zip",
+    "auth-header-name": "Authorization",
+    "auth-header-value": "Bearer token456",
+    "enable-gtfs-tidy": true
+  },
+  "gtfs-rt-feeds": [
+    {
+      "id": "agency-a",
+      "agency-ids": ["40"],
+      "trip-updates-url": "https://api.example.com/agency-a/trip-updates.pb",
+      "vehicle-positions-url": "https://api.example.com/agency-a/vehicle-positions.pb",
+      "service-alerts-url": "https://api.example.com/agency-a/service-alerts.pb",
+      "headers": { "Authorization": "Bearer token123" },
+      "refresh-interval": 30,
+      "enabled": true
+    },
+    {
+      "id": "agency-b",
+      "agency-ids": ["1"],
+      "trip-updates-url": "https://api.example.com/agency-b/trip-updates.pb",
+      "vehicle-positions-url": "https://api.example.com/agency-b/vehicle-positions.pb",
+      "refresh-interval": 60
+    }
+  ],
+  "data-path": "/data/gtfs.db"
+}
+```
+
+**Note:** The `-f` flag is mutually exclusive with other command-line flags. If you use `-f`, all other configuration flags will be ignored. The system will return an error if you try to use both.
+
+**Dump Current Configuration:**
+
+```bash
+./bin/transitflow -dump-config > my-config.json
+# or with other flags
+./bin/transitflow -port 8080 -env production -dump-config > config.json
+```
+
+**JSON Schema & IDE Integration:**
+
+A JSON schema file is provided at `config.schema.json` for IDE autocomplete and validation. To enable IDE validation, add `$schema` to your config file:
+
+```json
+{
+  "$schema": "./config.schema.json",
+  "port": 4000,
+  "env": "development",
+  ...
+}
+
+```
+
+### Configuration Options
+
+| Option             | Type    | Default         | Description                                 |
+| ------------------ | ------- | --------------- | ------------------------------------------- |
+| `port`               | integer | 4000            | API server port                             |
+| `env`                | string  | "development"   | Environment (development, test, production) |
+| `api-keys`           | array   | ["test"]        | API keys for authentication                 |
+| `protected-api-keys` | array   | (test keys)     | Secret API keys for sensitive endpoints     |
+| `exempt-api-keys`    | array   | (Sound Transit) | API keys exempt from rate limiting          |
+| `log-level`          | string  | "info"          | Log level (debug, info, warn, error)        |
+| `log-format`         | string  | "text"          | Log format (text, json)                     |
+| `rate-limit`         | integer | 100             | Requests per second per API key             |
+| `gtfs-static-feed`   | object  | (Sound Transit) | Static GTFS feed configuration              |
+| `gtfs-rt-feeds`      | array   | (Sound Transit) | GTFS-RT feed configurations (see below)     |
+| `data-path`          | string  | "./gtfs.db"     | Path to SQLite database                     |
+
+#### GTFS-RT Feed Options
+
+Each entry in the `gtfs-rt-feeds` array supports:
+
+| Field                   | Type    | Default                          | Description                                                                                                                                                                                                                                |
+| ----------------------- | ------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                    | string  | auto (`"feed-0"`, `"feed-1"`, …) | Unique identifier for the feed, used in logs and internal data partitioning                                                                                                                                                                |
+| `agency-ids`            | array   | `[]`                             | When set, only realtime data (trips, vehicles, alerts) belonging to the listed agency IDs is included. Data for other agencies in the same feed is filtered out. Agencies are resolved via route→agency mapping from the static GTFS data. |
+| `trip-updates-url`      | string  | `""`                             | URL for GTFS-RT trip updates protobuf                                                                                                                                                                                                      |
+| `vehicle-positions-url` | string  | `""`                             | URL for GTFS-RT vehicle positions protobuf                                                                                                                                                                                                 |
+| `service-alerts-url`    | string  | `""`                             | URL for GTFS-RT service alerts protobuf                                                                                                                                                                                                    |
+| `realtime-auth-header-name`  | string  | `""`                             | Optional header name for GTFS-RT auth (legacy)                                                                                                                                                                                             |
+| `realtime-auth-header-value` | string  | `""`                             | Optional header value for GTFS-RT auth (legacy)                                                                                                                                                                                            |
+| `headers`                    | object  | `{}`                             | HTTP headers sent with every request to this feed                                                                                                                                                                                          |
+| `refresh-interval`           | integer | `30`                             | Polling interval in seconds                                                                                                                                                                                                                |
+| `enabled`                    | boolean | `true`                           | Set to `false` to disable polling without removing the entry                                                                                                                                                                               |
+
+A feed must have at least one URL (`trip-updates-url`, `vehicle-positions-url`, or `service-alerts-url`) to be activated. Each feed runs its own independent polling goroutine. Data from all enabled feeds is merged into a single unified view for the API.
+
+## Basic Commands
+
+All basic commands are managed by our Makefile:
+
+* `make run` - Build and run the app with a fake API key: `test`.
+* `make build` - Build the app.
+* `make clean` - Delete all build and coverage artifacts.
+* `make coverage` - Test and generate HTML coverage artifacts.
+* `make test` - Run tests.
+* `make load-test` - Run smoketest and stresstest (k6).
+* `make models` - Generate Go code from SQL queries using sqlc.
+* `make watch` - Build and run the app with Air for live reloading.
+* `make update-openapi` - Fetch the latest upstream OpenAPI spec and overwrite `testdata/openapi.yml`.
+* `make check-openapi` - Check whether `testdata/openapi.yml` is in sync with upstream (exits 1 if out of date).
+
+CI checks that `testdata/openapi.yml` is in sync with [OneBusAway/sdk-config](https://github.com/OneBusAway/sdk-config/blob/main/openapi.yml) on every push and PR. If the upstream spec has changed, CI will fail with a message to run `make update-openapi` and commit the result. If you find issues in the upstream spec, open an issue at [OneBusAway/sdk-config](https://github.com/OneBusAway/sdk-config/issues).
+
+### FTS5 (SQLite) builds and tests
+
+The server uses `github.com/mattn/go-sqlite3` and SQLite FTS5 for route search. Build and test with the FTS5 tag enabled:
+
+```bash
+CGO_ENABLED=1 go test -tags "sqlite_fts5 sqlite_math_functions" ./...
+# or
+CGO_ENABLED=1 go build -tags "sqlite_fts5 sqlite_math_functions" ./...
+
+```
+
+Ensure you have a working C toolchain when CGO is enabled.
+
+## SQLite Drivers (Fast Mode vs. Compatible Mode)
+
+Maglev uses SQLite and supports two different drivers via Go build tags to balance production performance with developer experience:
+
+1. **Fast Mode (Default)**: Uses `github.com/mattn/go-sqlite3` (CGo). This is the default for production because of its high performance and support for advanced SQLite features like FTS5 (Full-Text Search). It requires a C compiler (GCC/Clang) installed on your system.
+   - Run tests: `make test`
+   - Build: `make build`
+
+2. **Compatible Mode**: Uses `modernc.org/sqlite` (Pure Go). This mode is intended for local development and CI on platforms where CGo is difficult to configure (like Windows). It does not require a C compiler.
+   - Run tests: `make test-pure`
+   - Build: `make build-pure`
+
+## Directory Structure
+
+* `bin`: Compiled application binaries.
+* `cmd/api`: Application-specific code (server, HTTP handling, auth).
+* `internal`: Ancillary packages (database, validation, etc.). Code here is reusable and imported by `cmd/api`.
+* `migrations`: SQL migration files.
+* `remote`: Production server configuration and setup scripts.
+* `go.mod`: Project dependencies and module path.
+* `Makefile`: Automation for building, testing, and migrations.
+
+## Debugging
+
+```bash
+# Install Delve
+go install github.com/go-delve/delve/cmd/dlv@latest
+
+# Build the app
+make build
+
+# Start the debugger
+dlv --listen=:2345 --headless=true --api-version=2 --accept-multiclient exec ./bin/transitflow
+```
+
+This allows debugging in the GoLand IDE.
+
+### Profiling (pprof)
+
+Maglev includes built-in Go `pprof` endpoints for debugging memory leaks and CPU bottlenecks. For security reasons, these are completely disabled by default and are never exposed on the public API port.
+
+To enable the profiling server, set the following environment variable:
+
+```bash
+MAGLEV_ENABLE_PPROF=1
+```
+
+When enabled, the debug server will start strictly on the local loopback interface at `127.0.0.1:6060`.
+
+**Accessing in Production:**  
+To securely access the profiles on a remote production server, do not open the port to the internet. Instead, use an SSH tunnel:
+
+```bash
+ssh -L 6060:localhost:6060 your-user@production-server
+```
+
+You can then view the profiles locally in your browser at `http://localhost:6060/debug/pprof/`.
+
+## SQL
+
+We use sqlc with SQLite to generate a data access layer. Use `make models` to regenerate files.
+
+### Important files
+
+* `gtfsdb/models.go`: Autogenerated by sqlc.
+* `gtfsdb/query.sql`: All SQL queries.
+* `gtfsdb/query.sql.go`: SQL turned into Go code.
+* `gtfsdb/schema.sql`: Database schema.
+* `gtfsdb/sqlc.yml`: sqlc configuration.
+
+## Docker
+
+Docker support provides a consistent environment and simplified deployment.
+
+### Prerequisites
+
+* Docker 20.10 or later.
+* Docker Compose v2.0 or later.
+
+### Building the Image
+
+```bash
+# Build the production image
+docker build -t maglev .
+# Or use make
+make docker-build
+
+```
+
+### Running with Docker
+
+**Note:** Ensure you have created `config.docker.json` from the template.
+
+**Using Docker directly:**
+
+```bash
+# Run the container (mount your config file)
+docker run -p 4000:4000 -v $(pwd)/config.docker.json:/app/config.json:ro maglev
+
+# Or use make
+make docker-run
+
+```
+
+**Using Docker Compose (recommended for production):**
+
+```bash
+# Start the service
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop the service
+docker-compose down
+
+```
+
+### Development with Docker
+
+For development with live reload:
+
+```bash
+# Start development environment with Air live reload
+docker-compose -f docker-compose.dev.yml up
+
+# Or use make
+make docker-compose-dev
+
+```
+
+### Docker Make Targets
+
+| Command                    | Description                   |
+| -------------------------- | ----------------------------- |
+| `make docker-build`        | Build the Docker image        |
+| `make docker-run`          | Build and run the container   |
+| `make docker-stop`         | Stop and remove the container |
+| `make docker-compose-up`   | Start with Docker Compose     |
+| `make docker-compose-down` | Stop Docker Compose services  |
+| `make docker-compose-dev`  | Start development environment |
+| `make docker-clean`        | Remove all Docker artifacts   |
+
+### Data Persistence
+
+The SQLite database is persisted using Docker volumes:
+
+* **Production**: `maglev-data` volume mounted at `/app/data`.
+* **Development**: `maglev-dev-data` volume.
+
+The GTFS database is stored in `/app/data/gtfs.db` within the container.
+
+#### Copy database to host for inspection
+
+```bash
+# Note: 'maglev' is the default container name when using docker-compose
+docker cp maglev:/app/data/gtfs.db ./gtfs-backup.db
+
+```
+
+Once copied, you can inspect it with any SQLite client:
+
+```bash
+sqlite3 gtfs-backup.db "SELECT name FROM sqlite_master WHERE type='table';"
+
+```
+
+#### Check database file exists and size
+
+```bash
+docker-compose exec maglev ls -lh /app/data/
+
+```
+
+#### Interactive SQLite session inside container
+
+```bash
+docker-compose exec maglev sqlite3 /app/data/gtfs.db
+
+```
+
+**SQLite CLI commands:**
+
+```text
+.tables
+.schema stops
+.quit
+
+```
+
+**SQL queries:**
+
+```sql
+-- Count records in a table
+SELECT COUNT(*) FROM stops;
+
+-- View sample data
+SELECT * FROM stops LIMIT 5;
+
+```
+
+#### Additional troubleshooting commands
+
+Verify database integrity:
+
+```bash
+docker-compose exec maglev sqlite3 /app/data/gtfs.db "PRAGMA integrity_check;"
+
+```
+
+Check database size:
+
+```bash
+docker-compose exec maglev du -h /app/data/gtfs.db
+
+```
+
+View recent database modifications:
+
+```bash
+docker-compose exec maglev stat /app/data/gtfs.db
+
+```
+
+### Health Checks
+
+The container includes a health check that verifies the API is responding:
+
+```bash
+# Check container health status
+docker inspect --format='{{.State.Health.Status}}' maglev
+
+```
+
+**Important:** The health checks use the `HEALTH_CHECK_KEY` environment variable (defaults to `test`). If you change your API keys in the configuration, update this environment variable to match:
+
+```yaml
+# In docker-compose.yml or docker-compose.dev.yml
+environment:
+  - HEALTH_CHECK_KEY=your-api-key
+```
+
+### Environment Variables
+
+| Variable           | Description                            | Default |
+| ------------------ | -------------------------------------- | ------- |
+| `TZ`               | Timezone for the container             | `UTC`   |
+| `HEALTH_CHECK_KEY` | API key used for health check endpoint | `test`  |
+
+### Troubleshooting
+
+**Container fails to start:**
+
+```bash
+# Check logs
+docker-compose logs maglev
+
+# Verify config file exists
+ls -la config.docker.json
+
+```
+
+**Health check failing:**
+
+```bash
+# Test the endpoint manually
+curl http://localhost:4000/healthz
+
+```
+
+**Permission issues:**
+
+* The container runs as a non-root user (transitflow:1000).
+* Ensure mounted volumes are accessible.

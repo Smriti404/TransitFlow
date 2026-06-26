@@ -1,0 +1,264 @@
+package restapi
+
+import (
+	"cmp"
+	"fmt"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"transitflow/gtfsdb"
+	"transitflow/internal/models"
+	"transitflow/internal/nulls"
+	"transitflow/internal/utils"
+)
+
+// stopsForLocationHandler returns stops near a geographic location, specified by
+// lat/lon coordinates with an optional radius or latSpan/lonSpan bounding box.
+func (api *RestAPI) stopsForLocationHandler(w http.ResponseWriter, r *http.Request) {
+	queryParams := r.URL.Query()
+
+	var fieldErrors map[string][]string
+	loc, fieldErrors := api.parseLocationParams(r, fieldErrors)
+	maxCount, fieldErrors := utils.ParseMaxCount(queryParams, models.DefaultMaxCountForStops, fieldErrors)
+	query := queryParams.Get("query")
+
+	var routeTypes []int
+	if routeTypeStr := queryParams.Get("routeType"); routeTypeStr != "" {
+		routeTypeStrs := strings.Split(routeTypeStr, ",")
+
+		const maxRouteTypeTokens = 100
+
+		if len(routeTypeStrs) > maxRouteTypeTokens {
+			if fieldErrors == nil {
+				fieldErrors = make(map[string][]string)
+			}
+			fieldErrors["routeType"] = []string{
+				fmt.Sprintf("too many route types (maximum %d allowed)", maxRouteTypeTokens),
+			}
+		} else {
+			for _, rtStr := range routeTypeStrs {
+				rtStr = strings.TrimSpace(rtStr)
+				if rtStr != "" {
+					var rt int
+					if _, err := fmt.Sscanf(rtStr, "%d", &rt); err != nil {
+						if fieldErrors == nil {
+							fieldErrors = make(map[string][]string)
+						}
+						if _, exists := fieldErrors["routeType"]; !exists {
+							fieldErrors["routeType"] = []string{
+								`Invalid field value for field "routeType".`,
+							}
+						}
+					} else {
+						routeTypes = append(routeTypes, rt)
+					}
+				}
+			}
+		}
+	}
+
+	queryTime := api.Clock.Now()
+
+	if timeStr := queryParams.Get("time"); timeStr != "" {
+		var timeMs int64
+		if _, err := fmt.Sscanf(timeStr, "%d", &timeMs); err == nil {
+			// Bin to 15 minutes
+			binnedMs := timeMs - (timeMs % 900000)
+			queryTime = time.UnixMilli(binnedMs)
+		}
+	}
+
+	if len(fieldErrors) > 0 {
+		api.validationErrorResponse(w, r, fieldErrors)
+		return
+	}
+
+	// Validate and sanitize query
+	sanitizedQuery, err := utils.ValidateAndSanitizeQuery(query)
+	if err != nil {
+		fieldErrors := map[string][]string{
+			"query": {err.Error()},
+		}
+		api.validationErrorResponse(w, r, fieldErrors)
+		return
+	}
+	query = sanitizedQuery
+
+	ctx := r.Context()
+
+	// Check if context is already cancelled
+	if ctx.Err() != nil {
+		api.clientCanceledResponse(w, r, ctx.Err())
+		return
+	}
+
+	allAgencies, err := api.GtfsManager.GetAgencies(ctx)
+	if err != nil {
+		api.serverErrorResponse(w, r, err)
+		return
+	}
+
+	stops, limitExceeded := api.GtfsManager.GetStopsForLocation(ctx, loc, query, maxCount, routeTypes)
+
+	// Referenced Java code: "here we sort by distance for possible truncation, but later it will be re-sorted by stopId"
+	slices.SortStableFunc(stops, func(a, b gtfsdb.Stop) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
+
+	results := []models.Stop{}
+	routeIDs := map[string]bool{}
+	agencyIDs := map[string]bool{}
+
+	stopIDs := make([]string, 0, len(stops))
+	stopMap := make(map[string]gtfsdb.Stop)
+	for _, stop := range stops {
+		stopIDs = append(stopIDs, stop.ID)
+		stopMap[stop.ID] = stop
+	}
+
+	if len(stopIDs) == 0 {
+		// Return empty response if no stops found
+		agencies := utils.FilterAgencies(allAgencies, agencyIDs)
+		if agencies == nil {
+			agencies = []models.AgencyReference{}
+		}
+
+		routes := utils.FilterRoutes(api.GtfsManager.GtfsDB.Queries, ctx, routeIDs)
+		if routes == nil {
+			routes = []models.Route{}
+		}
+
+		references := models.NewEmptyReferences()
+		references.Agencies = agencies
+		references.Routes = routes
+		response := models.NewListResponseWithRange(results, *references, api.GtfsManager.CheckIfOutOfBounds(loc), api.Clock, false)
+		api.sendResponse(w, r, response)
+		return
+	}
+
+	// Get active service IDs for the requested queryTime
+	currentDate := queryTime.Format("20060102")
+	activeServiceIDs, err := api.GtfsManager.GtfsDB.Queries.GetActiveServiceIDsForDate(ctx, currentDate)
+	if err != nil {
+		api.serverErrorResponse(w, r, err)
+		return
+	}
+
+	// Batch query to get route IDs for all stops, strictly filtered by active service IDs
+	var routeIDsForStops []gtfsdb.GetActiveRouteIDsForStopsOnDateRow
+	if len(activeServiceIDs) > 0 {
+		routeIDsForStops, err = api.GtfsManager.GtfsDB.Queries.GetActiveRouteIDsForStopsOnDate(ctx, gtfsdb.GetActiveRouteIDsForStopsOnDateParams{
+			StopIds:    stopIDs,
+			ServiceIds: activeServiceIDs,
+		})
+		if err != nil {
+			api.serverErrorResponse(w, r, err)
+			return
+		}
+	}
+
+	// Batch query to get agencies for all stops
+	agenciesForStops, err := api.GtfsManager.GtfsDB.Queries.GetAgenciesForStops(ctx, stopIDs)
+	if err != nil {
+		api.serverErrorResponse(w, r, err)
+		return
+	}
+
+	// Create maps for efficient lookup
+	stopRouteIDs := make(map[string][]string)
+	stopAgency := make(map[string]*gtfsdb.GetAgenciesForStopsRow)
+
+	for _, routeIDRow := range routeIDsForStops {
+		stopID := routeIDRow.StopID
+		routeIDStr, ok := routeIDRow.RouteID.(string)
+		if !ok {
+			api.Logger.Warn("unexpected RouteID type",
+				"stopID", stopID,
+				"routeID", routeIDRow.RouteID,
+			)
+			continue
+		}
+
+		agencyId, _, err := utils.ExtractAgencyIDAndCodeID(routeIDStr)
+		if err != nil {
+			continue // Skip malformed route IDs
+		}
+		stopRouteIDs[stopID] = append(stopRouteIDs[stopID], routeIDStr)
+		agencyIDs[agencyId] = true
+		routeIDs[routeIDStr] = true
+	}
+
+	// Group agencies by stop (take the first agency for each stop)
+	for _, agencyRow := range agenciesForStops {
+		stopID := agencyRow.StopID
+		if _, exists := stopAgency[stopID]; !exists {
+			stopAgency[stopID] = &agencyRow
+		}
+	}
+
+	isLimitExceeded := limitExceeded
+	var resultRawStopIDs []string
+
+	// Build results using the pre-fetched data
+	for _, stopID := range stopIDs {
+		if ctx.Err() != nil {
+			api.clientCanceledResponse(w, r, ctx.Err())
+			return
+		}
+
+		stop := stopMap[stopID]
+		rids := stopRouteIDs[stopID]
+		agency := stopAgency[stopID]
+
+		if len(rids) == 0 || agency == nil {
+			continue
+		}
+
+		resultRawStopIDs = append(resultRawStopIDs, stopID)
+
+		direction := api.DirectionCalculator.CalculateStopDirection(ctx, stop.ID, stop.Direction)
+
+		results = append(results, models.NewStop(
+			nulls.StringOrEmpty(stop.Code),
+			direction,
+			utils.FormCombinedID(agency.ID, stop.ID),
+			nulls.StringOrEmpty(stop.Name),
+			"",
+			utils.MapWheelchairBoarding(nulls.WheelchairBoardingOrUnknown(stop.WheelchairBoarding)),
+			stop.Lat,
+			stop.Lon,
+			0,
+			rids,
+			rids,
+		))
+	}
+
+	if ctx.Err() != nil {
+		api.clientCanceledResponse(w, r, ctx.Err())
+		return
+	}
+
+	agencies := utils.FilterAgencies(allAgencies, agencyIDs)
+	routes := utils.FilterRoutes(api.GtfsManager.GtfsDB.Queries, ctx, routeIDs)
+
+	if agencies == nil {
+		agencies = []models.AgencyReference{}
+	}
+	if routes == nil {
+		routes = []models.Route{}
+	}
+
+	// Populate situation references for alerts affecting the returned stops
+	alerts := api.collectAlertsForStops(resultRawStopIDs)
+	situations := api.BuildSituationReferences(alerts)
+
+	references := models.NewEmptyReferences()
+	references.Agencies = agencies
+	references.Routes = routes
+	references.Situations = situations
+
+	response := models.NewListResponseWithRange(results, *references, api.GtfsManager.CheckIfOutOfBounds(loc), api.Clock, isLimitExceeded)
+	api.sendResponse(w, r, response)
+}

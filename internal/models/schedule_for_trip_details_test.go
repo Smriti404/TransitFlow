@@ -1,0 +1,85 @@
+package models
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func TestNewSchedule(t *testing.T) {
+	date := time.Date(2024, 6, 15, 8, 0, 0, 0, time.UTC)
+	freq := &Frequency{
+		StartTime:  NewModelTime(date),
+		EndTime:    NewModelTime(date.Add(time.Hour)),
+		Headway:    NewModelDuration(300 * time.Second),
+		ExactTimes: 0,
+	}
+	nextTripID := "next_trip_123"
+	previousTripID := "prev_trip_456"
+	stopTime1 := NewStopTime(8*time.Hour, 8*time.Hour+time.Minute, "stop_1", "Downtown", 100.0, "MANY_SEATS_AVAILABLE")
+	stopTime2 := NewStopTime(9*time.Hour, 9*time.Hour+time.Minute, "stop_2", "Uptown", 200.0, "FEW_SEATS_AVAILABLE")
+	stopTimes := []StopTime{stopTime1, stopTime2}
+	timeZone := "America/Los_Angeles"
+
+	schedule := NewSchedule(freq, nextTripID, previousTripID, stopTimes, timeZone)
+
+	assert.Equal(t, freq, schedule.Frequency)
+	assert.Equal(t, nextTripID, schedule.NextTripID)
+	assert.Equal(t, previousTripID, schedule.PreviousTripID)
+	assert.Equal(t, stopTimes, schedule.StopTimes)
+	assert.Equal(t, timeZone, schedule.TimeZone)
+	assert.Equal(t, 2, len(schedule.StopTimes))
+}
+
+func TestScheduleJSON(t *testing.T) {
+	stopTime := NewStopTime(8*time.Hour, 8*time.Hour+time.Minute, "stop_1", "Downtown", 100.0, "MANY_SEATS_AVAILABLE")
+
+	schedule := Schedule{
+		Frequency:      nil,
+		NextTripID:     "next_trip",
+		PreviousTripID: "prev_trip",
+		StopTimes:      []StopTime{stopTime},
+		TimeZone:       "America/Los_Angeles",
+	}
+
+	jsonData, err := json.Marshal(schedule)
+	assert.NoError(t, err)
+
+	var unmarshaledSchedule Schedule
+	err = json.Unmarshal(jsonData, &unmarshaledSchedule)
+	assert.NoError(t, err)
+
+	assert.Nil(t, unmarshaledSchedule.Frequency)
+	assert.Equal(t, schedule.NextTripID, unmarshaledSchedule.NextTripID)
+	assert.Equal(t, schedule.PreviousTripID, unmarshaledSchedule.PreviousTripID)
+	assert.Equal(t, schedule.TimeZone, unmarshaledSchedule.TimeZone)
+	assert.Equal(t, 1, len(unmarshaledSchedule.StopTimes))
+	assert.Equal(t, schedule.StopTimes[0].StopID, unmarshaledSchedule.StopTimes[0].StopID)
+}
+
+func TestScheduleWithEmptyValues(t *testing.T) {
+	schedule := NewSchedule(nil, "", "", []StopTime{}, "")
+
+	assert.Nil(t, schedule.Frequency)
+	assert.Equal(t, "", schedule.NextTripID)
+	assert.Equal(t, "", schedule.PreviousTripID)
+	assert.Empty(t, schedule.StopTimes)
+	assert.Equal(t, "", schedule.TimeZone)
+}
+
+func TestScheduleWithMultipleStopTimes(t *testing.T) {
+	stopTimes := []StopTime{
+		NewStopTime(8*time.Hour, 8*time.Hour+time.Minute, "stop_1", "Downtown", 100.0, "MANY_SEATS_AVAILABLE"),
+		NewStopTime(9*time.Hour, 9*time.Hour+time.Minute, "stop_2", "Uptown", 200.0, "FEW_SEATS_AVAILABLE"),
+		NewStopTime(10*time.Hour, 10*time.Hour+time.Minute, "stop_3", "Midtown", 300.0, "STANDING_ROOM_ONLY"),
+	}
+
+	schedule := NewSchedule(nil, "trip_next", "trip_prev", stopTimes, "America/New_York")
+
+	assert.Equal(t, 3, len(schedule.StopTimes))
+	assert.Equal(t, "stop_1", schedule.StopTimes[0].StopID)
+	assert.Equal(t, "stop_2", schedule.StopTimes[1].StopID)
+	assert.Equal(t, "stop_3", schedule.StopTimes[2].StopID)
+}

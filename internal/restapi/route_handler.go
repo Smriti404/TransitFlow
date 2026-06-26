@@ -1,0 +1,71 @@
+package restapi
+
+import (
+	"database/sql"
+	"errors"
+	"net/http"
+
+	"transitflow/internal/models"
+	"transitflow/internal/utils"
+)
+
+// routeHandler returns details for a single transit route identified by its combined agency_routeID.
+func (api *RestAPI) routeHandler(w http.ResponseWriter, r *http.Request) {
+	agencyID, routeID, ok := api.extractAndValidateAgencyCodeID(w, r)
+	if !ok {
+		return
+	}
+
+	ctx := r.Context()
+
+	route, err := api.GtfsManager.GtfsDB.Queries.GetRoute(ctx, routeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			api.sendNotFound(w, r)
+			return
+		}
+		api.serverErrorResponse(w, r, err)
+		return
+	}
+	if route.ID == "" {
+		api.sendNotFound(w, r)
+		return
+	}
+
+	routeData := models.NewRoute(
+		utils.FormCombinedID(agencyID, route.ID),
+		agencyID,
+		route.ShortName.String,
+		route.LongName.String,
+		route.Desc.String,
+		models.RouteType(route.Type),
+		route.Url.String,
+		route.Color.String,
+		route.TextColor.String)
+
+	references := models.NewEmptyReferences()
+
+	includeReferences := ShouldIncludeReferences(r)
+
+	if includeReferences {
+		agency, err := api.GtfsManager.GtfsDB.Queries.GetAgency(ctx, agencyID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				api.sendNotFound(w, r)
+				return
+			}
+			api.serverErrorResponse(w, r, err)
+			return
+		}
+		// Use the existing helper to map the database row to the model
+		references.Agencies = append(references.Agencies, models.AgencyReferenceFromDatabase(&agency))
+	}
+
+	// Populate situation references for alerts affecting this route
+	alerts := api.GtfsManager.GetAlertsForRoute(routeID)
+	situations := api.BuildSituationReferences(alerts)
+	references.Situations = append(references.Situations, situations...)
+
+	response := models.NewEntryResponse(routeData, *references, api.Clock)
+	api.sendResponse(w, r, response)
+}

@@ -1,0 +1,335 @@
+package restapi
+
+import (
+	"net/http"
+	"strconv"
+	"time"
+
+	"transitflow/gtfsdb"
+	"transitflow/internal/clock"
+	"transitflow/internal/models"
+	"transitflow/internal/utils"
+)
+
+// scheduleForRouteHandler returns the full schedule for a route on a given date,
+// organized by stop-trip groupings with associated service IDs.
+func (api *RestAPI) scheduleForRouteHandler(w http.ResponseWriter, r *http.Request) {
+	agencyID, routeID, ok := api.extractAndValidateAgencyCodeID(w, r)
+	if !ok {
+		return
+	}
+
+	dateParam := r.URL.Query().Get("date")
+	ctx := r.Context()
+
+	route, err := api.GtfsManager.GtfsDB.Queries.GetRoute(ctx, routeID)
+	if err != nil {
+		api.sendNotFound(w, r)
+		return
+	}
+
+	agency, err := api.GtfsManager.GtfsDB.Queries.GetAgency(ctx, agencyID)
+	if err != nil {
+		api.sendNotFound(w, r)
+		return
+	}
+	loc, err := loadAgencyLocation(agency.ID, agency.Timezone)
+	if err != nil {
+		api.serverErrorResponse(w, r, err)
+		return
+	}
+
+	var targetDate string
+	var scheduleDate int64
+	if dateParam != "" {
+		parsedDate, parseErr := time.ParseInLocation("2006-01-02", dateParam, loc)
+		if parseErr != nil {
+			epochMs, numErr := strconv.ParseInt(dateParam, 10, 64)
+			if numErr != nil {
+				api.validationErrorResponse(w, r, map[string][]string{
+					"date": {"Invalid date format. Use YYYY-MM-DD"},
+				})
+				return
+			}
+			t := time.UnixMilli(epochMs).In(loc)
+			y, m, d := t.Date()
+			parsedDate = time.Date(y, m, d, 0, 0, 0, 0, loc)
+		}
+		y, m, d := parsedDate.Date()
+		startOfDay := time.Date(y, m, d, 0, 0, 0, 0, loc)
+		targetDate = startOfDay.Format("20060102")
+		scheduleDate = startOfDay.UnixMilli()
+	} else {
+		now := api.Clock.Now().In(loc)
+		y, m, d := now.Date()
+		startOfDay := time.Date(y, m, d, 0, 0, 0, 0, loc)
+		targetDate = startOfDay.Format("20060102")
+		scheduleDate = startOfDay.UnixMilli()
+	}
+
+	// Check if date exceeds the feed's max calendar end date -> ServiceDateOutOfRange
+	feedEndDateRaw, err := api.GtfsManager.GtfsDB.Queries.GetFeedEndDate(ctx)
+	if err != nil {
+		api.serverErrorResponse(w, r, err)
+		return
+	}
+	if feedEndDate, ok := feedEndDateRaw.(string); ok && feedEndDate != "" && targetDate > feedEndDate {
+		api.sendResponse(w, r, models.NewResponse(510, nil, "ServiceDateOutOfRange", api.Clock))
+		return
+	}
+
+	agencyModel := models.NewAgencyReference(
+		agency.ID,
+		agency.Name,
+		agency.Url,
+		agency.Timezone,
+		agency.Lang.String,
+		agency.Phone.String,
+		agency.Email.String,
+		agency.FareUrl.String,
+		"",
+		false,
+	)
+	routeModel := models.NewRoute(
+		utils.FormCombinedID(agencyID, route.ID),
+		route.AgencyID,
+		route.ShortName.String,
+		route.LongName.String,
+		route.Desc.String,
+		models.RouteType(route.Type),
+		route.Url.String,
+		route.Color.String,
+		route.TextColor.String)
+
+	serviceIDs, err := api.GtfsManager.GtfsDB.Queries.GetActiveServiceIDsForDate(ctx, targetDate)
+	if err != nil {
+		api.serverErrorResponse(w, r, err)
+		return
+	}
+
+	if len(serviceIDs) == 0 {
+		api.sendResponse(w, r, buildNoServiceThatDayResponse(agencyID, routeID, scheduleDate, agencyModel, routeModel, api.Clock))
+		return
+	}
+
+	trips, err := api.GtfsManager.GtfsDB.Queries.GetTripsForRouteInActiveServiceIDs(ctx, gtfsdb.GetTripsForRouteInActiveServiceIDsParams{
+		RouteID:    routeID,
+		ServiceIds: serviceIDs,
+	})
+	if err != nil {
+		api.serverErrorResponse(w, r, err)
+		return
+	}
+
+	if len(trips) == 0 {
+		api.sendResponse(w, r, buildNoServiceThatDayResponse(agencyID, routeID, scheduleDate, agencyModel, routeModel, api.Clock))
+		return
+	}
+
+	routeSvcIDs := make(map[string]bool)
+	combinedServiceIDs := make([]string, 0, len(trips))
+	for _, trip := range trips {
+		if !routeSvcIDs[trip.ServiceID] {
+			routeSvcIDs[trip.ServiceID] = true
+			combinedServiceIDs = append(combinedServiceIDs, utils.FormCombinedID(agencyID, trip.ServiceID))
+		}
+	}
+
+	routeRefs := make(map[string]models.Route)
+	tripIDsSet := make(map[string]bool)
+
+	routeRefs[utils.FormCombinedID(agencyID, route.ID)] = routeModel
+
+	dirGroups := groupTripsByDirection(trips)
+	var stopTripGroupings []models.StopTripGrouping
+	globalStopIDSet := make(map[string]struct{})
+	var stopTimesRefs [][]models.RouteStopTime
+
+	for _, group := range dirGroups {
+		if ctx.Err() != nil {
+			api.clientCanceledResponse(w, r, ctx.Err())
+			return
+		}
+
+		tripsInGroup := group.Trips
+
+		seenDirSvcIDs := make(map[string]bool)
+		var dirServiceIDs []string
+		for _, trip := range tripsInGroup {
+			if !seenDirSvcIDs[trip.ServiceID] {
+				seenDirSvcIDs[trip.ServiceID] = true
+				dirServiceIDs = append(dirServiceIDs, trip.ServiceID)
+			}
+		}
+
+		var orderedStopIDs []string
+		var err error
+		if !group.DirectionID.Valid {
+			orderedStopIDs, err = api.GtfsManager.GtfsDB.Queries.GetOrderedStopIDsForTrip(ctx, tripsInGroup[0].ID)
+		} else {
+			orderedStopIDs, err = api.GtfsManager.GtfsDB.Queries.GetOrderedStopIDsForRouteDirection(ctx,
+				gtfsdb.GetOrderedStopIDsForRouteDirectionParams{
+					RouteID:     routeID,
+					DirectionID: group.DirectionID,
+					ServiceIds:  dirServiceIDs,
+				})
+		}
+		if err != nil {
+			api.serverErrorResponse(w, r, err)
+			return
+		}
+
+		for _, stopID := range orderedStopIDs {
+			globalStopIDSet[stopID] = struct{}{}
+		}
+
+		seenHeadsigns := make(map[string]bool)
+		var headsigns []string
+		for _, trip := range tripsInGroup {
+			hs := trip.TripHeadsign.String
+			if hs != "" && !seenHeadsigns[hs] {
+				seenHeadsigns[hs] = true
+				headsigns = append(headsigns, hs)
+			}
+		}
+
+		rawTripIDs := make([]string, 0, len(tripsInGroup))
+		for _, trip := range tripsInGroup {
+			rawTripIDs = append(rawTripIDs, trip.ID)
+		}
+
+		allStopTimes, err := api.GtfsManager.GtfsDB.Queries.GetStopTimesForTripIDs(ctx, rawTripIDs)
+		if err != nil {
+			api.serverErrorResponse(w, r, err)
+			return
+		}
+
+		stopTimesByTrip := make(map[string][]gtfsdb.StopTime, len(tripsInGroup))
+		for _, st := range allStopTimes {
+			stopTimesByTrip[st.TripID] = append(stopTimesByTrip[st.TripID], st)
+		}
+
+		var tripIDs []string
+		var tripsWithStopTimes []models.TripStopTimes
+		for _, trip := range tripsInGroup {
+			stopTimes := stopTimesByTrip[trip.ID]
+			if len(stopTimes) == 0 {
+				continue
+			}
+			combinedTripID := utils.FormCombinedID(agencyID, trip.ID)
+			tripIDsSet[trip.ID] = true
+			tripIDs = append(tripIDs, combinedTripID)
+
+			stopTimesList := make([]models.RouteStopTime, 0, len(stopTimes))
+			for _, st := range stopTimes {
+				arrivalDur := time.Duration(st.ArrivalTime)
+				departureDur := time.Duration(st.DepartureTime)
+				stopTimesList = append(stopTimesList, models.RouteStopTime{
+					ArrivalEnabled:   arrivalDur > 0,
+					ArrivalTime:      models.NewModelDuration(arrivalDur),
+					DepartureEnabled: departureDur > 0,
+					DepartureTime:    models.NewModelDuration(departureDur),
+					ServiceID:        utils.FormCombinedID(agencyID, trip.ServiceID),
+					StopHeadsign:     st.StopHeadsign.String,
+					StopID:           utils.FormCombinedID(agencyID, st.StopID),
+					TripID:           combinedTripID,
+				})
+			}
+			tripsWithStopTimes = append(tripsWithStopTimes, models.TripStopTimes{
+				TripID:    combinedTripID,
+				StopTimes: stopTimesList,
+			})
+			stopTimesRefs = append(stopTimesRefs, stopTimesList)
+		}
+
+		formattedStopIDs := make([]string, len(orderedStopIDs))
+		for i, sid := range orderedStopIDs {
+			formattedStopIDs[i] = utils.FormCombinedID(agencyID, sid)
+		}
+
+		stopTripGroupings = append(stopTripGroupings, models.StopTripGrouping{
+			DirectionID:        group.GroupID,
+			TripHeadsigns:      headsigns,
+			StopIDs:            formattedStopIDs,
+			TripIDs:            tripIDs,
+			TripsWithStopTimes: tripsWithStopTimes,
+		})
+	}
+
+	references := models.NewEmptyReferences()
+	references.Agencies = append(references.Agencies, agencyModel)
+	references.Routes = utils.MapValues(routeRefs)
+
+	tripIDs := make([]string, 0, len(tripIDsSet))
+	for tid := range tripIDsSet {
+		tripIDs = append(tripIDs, tid)
+	}
+
+	if len(tripIDs) > 0 {
+		tripRows, err := api.GtfsManager.GtfsDB.Queries.GetTripsByIDs(ctx, tripIDs)
+		if err != nil {
+			api.serverErrorResponse(w, r, err)
+			return
+		}
+
+		for _, t := range tripRows {
+			combinedTripID := utils.FormCombinedID(agencyID, t.ID)
+			tripRef := models.NewTripReference(
+				combinedTripID,
+				utils.FormCombinedID(agencyID, t.RouteID),
+				utils.FormCombinedID(agencyID, t.ServiceID),
+				t.TripHeadsign.String,
+				t.TripShortName.String,
+				strconv.FormatInt(t.DirectionID.Int64, 10),
+				utils.FormCombinedID(agencyID, t.BlockID.String),
+				utils.FormCombinedID(agencyID, t.ShapeID.String),
+			)
+			references.Trips = append(references.Trips, *tripRef)
+		}
+	}
+
+	uniqueStopIDs := make([]string, 0, len(globalStopIDSet))
+	for sid := range globalStopIDSet {
+		uniqueStopIDs = append(uniqueStopIDs, sid)
+	}
+
+	if len(uniqueStopIDs) > 0 {
+		modelStops, _, err := BuildStopReferencesAndRouteIDsForStops(api, ctx, agencyID, uniqueStopIDs)
+		if err != nil {
+			api.serverErrorResponse(w, r, err)
+			return
+		}
+		references.Stops = append(references.Stops, modelStops...)
+	}
+
+	for _, sref := range stopTimesRefs {
+		references.StopTimes = append(references.StopTimes, sref...)
+	}
+
+	entry := models.ScheduleForRouteEntry{
+		RouteID:           utils.FormCombinedID(agencyID, routeID),
+		ScheduleDate:      scheduleDate,
+		ServiceIDs:        combinedServiceIDs,
+		StopTripGroupings: stopTripGroupings,
+	}
+	api.sendResponse(w, r, models.NewEntryResponse(entry, *references, api.Clock))
+}
+
+// buildNoServiceThatDayResponse constructs the spec-compliant 510 NoServiceThatDay response,
+// which includes the entry stub and agency+route references required by the spec.
+func buildNoServiceThatDayResponse(agencyID, routeID string, scheduleDate int64, agencyModel models.AgencyReference, routeModel models.Route, clk clock.Clock) models.ResponseModel {
+	refs := models.NewEmptyReferences()
+	refs.Agencies = append(refs.Agencies, agencyModel)
+	refs.Routes = append(refs.Routes, routeModel)
+	entry := models.ScheduleForRouteEntry{
+		RouteID:           utils.FormCombinedID(agencyID, routeID),
+		ScheduleDate:      scheduleDate,
+		ServiceIDs:        []string{},
+		StopTripGroupings: []models.StopTripGrouping{},
+	}
+	data := map[string]any{
+		"entry":      entry,
+		"references": *refs,
+	}
+	return models.NewResponse(510, data, "NoServiceThatDay", clk)
+}

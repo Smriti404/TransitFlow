@@ -1,0 +1,269 @@
+package restapi
+
+import (
+	"context"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/OneBusAway/go-gtfs"
+	"transitflow/gtfsdb"
+	"transitflow/internal/models"
+	"transitflow/internal/utils"
+)
+
+func buildAgencyReferences(agencies []gtfsdb.Agency) []models.AgencyReference {
+	var refs []models.AgencyReference
+	for _, agency := range agencies {
+		refs = append(refs, models.AgencyReferenceFromDatabase(&agency))
+	}
+	return refs
+}
+
+func (api *RestAPI) BuildRouteReferences(ctx context.Context, agencyID string, stops []models.Stop) ([]models.Route, error) {
+	routeIDSet := make(map[string]bool)
+	originalRouteIDs := make([]string, 0)
+
+	for _, stop := range stops {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		for _, routeID := range stop.StaticRouteIDs {
+			_, originalRouteID, err := utils.ExtractAgencyIDAndCodeID(routeID)
+			if err != nil {
+				continue
+			}
+
+			if !routeIDSet[originalRouteID] {
+				routeIDSet[originalRouteID] = true
+				originalRouteIDs = append(originalRouteIDs, originalRouteID)
+			}
+		}
+	}
+
+	if len(originalRouteIDs) == 0 {
+		return []models.Route{}, nil
+	}
+
+	routes, err := api.GtfsManager.GtfsDB.Queries.GetRoutesByIDs(ctx, originalRouteIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	return buildRouteModels(ctx, agencyID, routes)
+}
+
+// buildRouteModels converts a slice of database routes into model routes.
+// It is the single source of truth for mapping gtfsdb.Route → models.Route.
+func buildRouteModels(ctx context.Context, agencyID string, routes []gtfsdb.Route) ([]models.Route, error) {
+	modelRoutes := make([]models.Route, 0, len(routes))
+	for _, route := range routes {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
+		combinedID := utils.FormCombinedID(agencyID, route.ID)
+
+		routeModel := models.NewRoute(
+			combinedID,
+			agencyID,
+			route.ShortName.String,
+			route.LongName.String,
+			route.Desc.String,
+			models.RouteType(route.Type),
+			route.Url.String,
+			route.Color.String,
+			route.TextColor.String,
+		)
+		modelRoutes = append(modelRoutes, routeModel)
+	}
+
+	return modelRoutes, nil
+}
+
+func (api *RestAPI) BuildSituationReferences(alerts []gtfs.Alert) []models.Situation {
+	situations := make([]models.Situation, 0, len(alerts))
+
+	for _, alert := range alerts {
+		situation := models.Situation{
+			ID:                 alert.ID,
+			CreationTime:       models.NewModelTime(time.Time{}),
+			ActiveWindows:      make([]models.ActiveWindow, 0, len(alert.ActivePeriods)),
+			AllAffects:         make([]models.AffectedEntity, 0, len(alert.InformedEntities)),
+			ConsequenceMessage: "",
+			Consequences:       []any{},
+			PublicationWindows: []any{},
+			Reason:             mapAlertCauseToReason(alert.Cause),
+			Severity:           mapAlertEffectToSeverity(alert.Effect),
+		}
+
+		for _, period := range alert.ActivePeriods {
+			window := models.ActiveWindow{}
+			if period.StartsAt != nil {
+				window.From = period.StartsAt.UnixMilli()
+			}
+			if period.EndsAt != nil {
+				window.To = period.EndsAt.UnixMilli()
+			}
+			situation.ActiveWindows = append(situation.ActiveWindows, window)
+		}
+
+		for _, entity := range alert.InformedEntities {
+			affectedEntity := models.AffectedEntity{
+				AgencyID:      getStringValue(entity.AgencyID),
+				ApplicationID: "",
+				DirectionID:   entity.DirectionID.String(),
+				RouteID:       getStringValue(entity.RouteID),
+				StopID:        getStringValue(entity.StopID),
+				TripID:        "",
+			}
+
+			if entity.TripID != nil {
+				affectedEntity.TripID = entity.TripID.ID
+			}
+
+			situation.AllAffects = append(situation.AllAffects, affectedEntity)
+		}
+
+		if len(alert.Header) > 0 && alert.Header[0].Text != "" {
+			situation.Summary = &models.TranslatedString{
+				Value: alert.Header[0].Text,
+				Lang:  alert.Header[0].Language,
+			}
+		}
+
+		if len(alert.Description) > 0 && alert.Description[0].Text != "" {
+			situation.Description = &models.TranslatedString{
+				Value: alert.Description[0].Text,
+				Lang:  alert.Description[0].Language,
+			}
+		}
+
+		if len(alert.URL) > 0 && alert.URL[0].Text != "" {
+			situation.URL = &models.TranslatedString{
+				Value: alert.URL[0].Text,
+				Lang:  alert.URL[0].Language,
+			}
+		}
+
+		situations = append(situations, situation)
+	}
+
+	return situations
+}
+
+func getStringValue(ptr *string) string {
+	if ptr == nil {
+		return ""
+	}
+	return *ptr
+}
+
+func mapAlertCauseToReason(cause gtfs.AlertCause) string {
+	switch cause {
+	case 1: // UNKNOWN_CAUSE
+		return "UNKNOWN_CAUSE"
+	case 2: // OTHER_CAUSE
+		return "miscellaneousReason"
+	case 3: // TECHNICAL_PROBLEM
+		return "equipmentReason"
+	case 4: // STRIKE
+		return "personnelReason"
+	case 5: // DEMONSTRATION
+		return "miscellaneousReason"
+	case 6: // ACCIDENT
+		return "miscellaneousReason"
+	case 7: // HOLIDAY
+		return "miscellaneousReason"
+	case 8: // WEATHER
+		return "environmentReason"
+	case 9: // MAINTENANCE
+		return "equipmentReason"
+	case 10: // CONSTRUCTION
+		return "equipmentReason"
+	case 11: // POLICE_ACTIVITY
+		return "securityAlert"
+	case 12: // MEDICAL_EMERGENCY
+		return "miscellaneousReason"
+	default:
+		return "UNKNOWN_CAUSE"
+	}
+}
+
+func mapAlertEffectToSeverity(effect gtfs.AlertEffect) string {
+	switch effect {
+	case 1: // NO_SERVICE
+		return "severe"
+	case 2: // REDUCED_SERVICE
+		return "normal"
+	case 3: // SIGNIFICANT_DELAYS
+		return "severe"
+	case 4: // DETOUR
+		return "normal"
+	case 5: // ADDITIONAL_SERVICE
+		return "noImpact"
+	case 6: // MODIFIED_SERVICE
+		return "normal"
+	case 7: // OTHER_EFFECT
+		return "normal"
+	case 8: // UNKNOWN_EFFECT
+		return "noImpact"
+	case 9: // STOP_MOVED
+		return "normal"
+	default:
+		return "noImpact"
+	}
+}
+
+// deduplicateAlerts takes multiple slices of alerts and returns a single slice with unique alerts by ID.
+func deduplicateAlerts(alertSlices ...[]gtfs.Alert) []gtfs.Alert {
+	seen := make(map[string]struct{})
+	var uniqueAlerts []gtfs.Alert
+
+	for _, slice := range alertSlices {
+		for _, alert := range slice {
+			if _, exists := seen[alert.ID]; !exists {
+				seen[alert.ID] = struct{}{}
+				uniqueAlerts = append(uniqueAlerts, alert)
+			}
+		}
+	}
+	return uniqueAlerts
+}
+
+// collectAlertsForStops returns deduplicated alerts matching any of the given stop IDs.
+// It acquires realTimeMutex internally via GetAlertsForStop; no external lock is required.
+func (api *RestAPI) collectAlertsForStops(stopIDs []string) []gtfs.Alert {
+	var alerts []gtfs.Alert
+	for _, stopID := range stopIDs {
+		alerts = append(alerts, api.GtfsManager.GetAlertsForStop(stopID)...)
+	}
+	return deduplicateAlerts(alerts)
+}
+
+// collectAlertsForRoutes returns deduplicated alerts matching any of the given route IDs.
+// It acquires realTimeMutex internally via GetAlertsForRoute; no external lock is required.
+func (api *RestAPI) collectAlertsForRoutes(routeIDs []string) []gtfs.Alert {
+	var alerts []gtfs.Alert
+	for _, routeID := range routeIDs {
+		alerts = append(alerts, api.GtfsManager.GetAlertsForRoute(routeID)...)
+	}
+	return deduplicateAlerts(alerts)
+}
+
+// ShouldIncludeReferences parses the "includeReferences" query parameter from the request.
+// It defaults to true if the parameter is absent or if it fails to parse as a boolean.
+func ShouldIncludeReferences(r *http.Request) bool {
+	val := r.URL.Query().Get("includeReferences")
+	if val == "" {
+		return true
+	}
+
+	parsed, err := strconv.ParseBool(val)
+	if err != nil {
+		return true
+	}
+
+	return parsed
+}

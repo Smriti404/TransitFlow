@@ -1,0 +1,63 @@
+package restapi
+
+import "transitflow/internal/models"
+
+type ListResponse[T any] struct {
+	Code        int         `json:"code"`
+	CurrentTime int64       `json:"currentTime"`
+	Data        ListData[T] `json:"data,omitempty"`
+	Text        string      `json:"text"`
+	Version     int         `json:"version"`
+}
+
+type ListData[T any] struct {
+	LimitExceeded bool                   `json:"limitExceeded"`
+	List          []T                    `json:"list"`
+	OutOfRange    bool                   `json:"outOfRange"`
+	References    models.ReferencesModel `json:"references"`
+	FieldErrors   map[string][]string    `json:"fieldErrors"`
+}
+
+type EntryResponse[T any] struct {
+	Code        int          `json:"code"`
+	CurrentTime int64        `json:"currentTime"`
+	Data        EntryData[T] `json:"data,omitempty"`
+	Text        string       `json:"text"`
+	Version     int          `json:"version"`
+}
+
+type EntryData[T any] struct {
+	Entry       T                      `json:"entry"`
+	References  models.ReferencesModel `json:"references"`
+	FieldErrors map[string][]string    `json:"fieldErrors,omitempty"`
+}
+
+// EmptyResponse is used by endpoints that return OK with an empty data body.
+type EmptyResponse struct {
+	Code        int    `json:"code"`
+	CurrentTime int64  `json:"currentTime"`
+	Text        string `json:"text"`
+	Version     int    `json:"version"`
+}
+
+type CoverageResponse ListResponse[models.AgencyCoverage]
+type RoutesResponse ListResponse[models.Route]
+type StopsResponse ListResponse[models.Stop]
+type RouteIDsForAgencyResponse ListResponse[string]
+type StopIDsForAgencyResponse ListResponse[string]
+type AgencyEntryResponse EntryResponse[models.AgencyReference]
+type ScheduleForRouteResponse EntryResponse[models.ScheduleForRouteEntry]
+type StopsForRouteResponse EntryResponse[models.RouteEntry]
+type TripDetailsResponse EntryResponse[models.TripDetails]
+type TripsForLocationResponse ListResponse[models.TripsForLocationListEntry]
+type BlockEntryResponse EntryResponse[models.BlockEntry]
+type TripsForRouteResponse ListResponse[models.TripsForRouteListEntry]
+type ArrivalAndDepartureResponse EntryResponse[models.ArrivalAndDeparture]
+type ArrivalsAndDeparturesResponse EntryResponse[models.ArrivalsAndDeparturesEntry]
+type VehiclesForAgencyResponse ListResponse[models.VehicleStatus]
+type ProblemReportsForStopResponse ListResponse[models.ProblemReportStop]
+type ProblemReportsForTripResponse ListResponse[models.ProblemReportTrip]
+type RouteEntryResponse EntryResponse[models.Route]
+type StopEntryResponse EntryResponse[models.Stop]
+type TripEntryResponse EntryResponse[models.TripResponse]
+type ShapeEntryResponse EntryResponse[models.ShapeEntry]

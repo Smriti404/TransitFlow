@@ -1,0 +1,172 @@
+package gtfs
+
+import (
+	"context"
+	"time"
+
+	"github.com/OneBusAway/go-gtfs"
+	"transitflow/gtfsdb"
+	"transitflow/internal/nulls"
+)
+
+func (m *Manager) MockAddAgency(id, name string) {
+	ctx := context.Background()
+	// If the agency already exists preserve it so
+	// real fields like Timezone are not clobbered.
+	if _, err := m.GtfsDB.Queries.GetAgency(ctx, id); err == nil {
+		return
+	}
+	_, _ = m.GtfsDB.Queries.CreateAgency(ctx, gtfsdb.CreateAgencyParams{
+		ID:       id,
+		Name:     name,
+		Url:      "",
+		Timezone: "",
+	})
+}
+
+func (m *Manager) MockAddRoute(id, agencyID, name string) {
+	ctx := context.Background()
+	if _, err := m.GtfsDB.Queries.GetRoute(ctx, id); err == nil {
+		return
+	}
+	_, _ = m.GtfsDB.Queries.CreateRoute(ctx, gtfsdb.CreateRouteParams{
+		ID:        id,
+		AgencyID:  agencyID,
+		ShortName: nulls.String(name),
+	})
+}
+func (m *Manager) MockAddVehicle(vehicleID, tripID, routeID string) {
+	m.realTimeMutex.Lock()
+	defer m.realTimeMutex.Unlock()
+
+	for _, v := range m.realTimeVehicles {
+		if v.ID != nil && v.ID.ID == vehicleID {
+			return
+		}
+	}
+	now := time.Now()
+	m.realTimeVehicles = append(m.realTimeVehicles, gtfs.Vehicle{
+		ID:        &gtfs.VehicleID{ID: vehicleID},
+		Timestamp: &now,
+		Trip: &gtfs.Trip{
+			ID: gtfs.TripID{
+				ID:      tripID,
+				RouteID: routeID,
+			},
+		},
+	})
+
+	idx := len(m.realTimeVehicles) - 1
+	m.realTimeVehicleLookupByVehicle[vehicleID] = idx
+	if tripID != "" {
+		m.realTimeVehicleLookupByTrip[tripID] = idx
+	}
+}
+
+type MockVehicleOptions struct {
+	Position            *gtfs.Position
+	CurrentStopSequence *uint32
+	StopID              *string
+	CurrentStatus       *gtfs.CurrentStatus
+	OccupancyStatus     *gtfs.OccupancyStatus
+	NoTrip              bool // NoTrip creates a vehicle with Trip == nil, simulating a GTFS-RT vehicle with no current trip assignment, which VehiclesForAgencyID filters out.
+	NoID                bool // NoID creates a vehicle with ID == nil, simulating a GTFS-RT vehicle that omits the vehicle descriptor.
+}
+
+func (m *Manager) MockAddVehicleWithOptions(vehicleID, tripID, routeID string, opts MockVehicleOptions) {
+	m.realTimeMutex.Lock()
+	defer m.realTimeMutex.Unlock()
+
+	for _, v := range m.realTimeVehicles {
+		if v.ID != nil && v.ID.ID == vehicleID {
+			return
+		}
+	}
+	now := time.Now()
+
+	var trip *gtfs.Trip
+	if !opts.NoTrip {
+		trip = &gtfs.Trip{
+			ID: gtfs.TripID{
+				ID:      tripID,
+				RouteID: routeID,
+			},
+		}
+	}
+
+	var vehicleIDPtr *gtfs.VehicleID
+	if !opts.NoID {
+		vehicleIDPtr = &gtfs.VehicleID{ID: vehicleID}
+	}
+
+	v := gtfs.Vehicle{
+		ID:                  vehicleIDPtr,
+		Timestamp:           &now,
+		Trip:                trip,
+		Position:            opts.Position,
+		CurrentStopSequence: opts.CurrentStopSequence,
+		StopID:              opts.StopID,
+		CurrentStatus:       opts.CurrentStatus,
+		OccupancyStatus:     opts.OccupancyStatus,
+	}
+	m.realTimeVehicles = append(m.realTimeVehicles, v)
+
+	idx := len(m.realTimeVehicles) - 1
+	if vehicleID != "" && !opts.NoID {
+		m.realTimeVehicleLookupByVehicle[vehicleID] = idx
+	}
+	if tripID != "" && !opts.NoTrip {
+		m.realTimeVehicleLookupByTrip[tripID] = idx
+	}
+}
+
+func (m *Manager) MockAddTrip(tripID, agencyID, routeID string) {
+	ctx := context.Background()
+	_, _ = m.GtfsDB.Queries.CreateTrip(ctx, gtfsdb.CreateTripParams{
+		ID:        tripID,
+		RouteID:   routeID,
+		ServiceID: "",
+	})
+}
+
+func (m *Manager) MockAddTripUpdate(tripID string, delay *time.Duration, stopTimeUpdates []gtfs.StopTimeUpdate) {
+	m.realTimeMutex.Lock()
+	defer m.realTimeMutex.Unlock()
+
+	trip := gtfs.Trip{
+		ID:              gtfs.TripID{ID: tripID},
+		Delay:           delay,
+		StopTimeUpdates: stopTimeUpdates,
+	}
+	m.realTimeTrips = append(m.realTimeTrips, trip)
+	if m.realTimeTripLookup == nil {
+		m.realTimeTripLookup = make(map[string]int)
+	}
+	m.realTimeTripLookup[tripID] = len(m.realTimeTrips) - 1
+}
+
+func (m *Manager) MockAddAlert(feedID string, alert gtfs.Alert) {
+	m.realTimeMutex.Lock()
+	defer m.realTimeMutex.Unlock()
+
+	if m.feedAlerts == nil {
+		m.feedAlerts = make(map[string][]gtfs.Alert)
+	}
+	m.feedAlerts[feedID] = append(m.feedAlerts[feedID], alert)
+	m.rebuildMergedRealtimeLocked()
+}
+
+// MockResetRealTimeData clears all mock real-time vehicles, trip updates, and alerts.
+func (m *Manager) MockResetRealTimeData() {
+	m.realTimeMutex.Lock()
+	defer m.realTimeMutex.Unlock()
+
+	m.realTimeVehicles = nil
+	m.realTimeVehicleLookupByVehicle = make(map[string]int)
+	m.realTimeVehicleLookupByTrip = make(map[string]int)
+	m.duplicatedVehicleByRoute = make(map[string][]gtfs.Vehicle)
+	m.realTimeTrips = nil
+	m.realTimeTripLookup = make(map[string]int)
+	m.feedAlerts = make(map[string][]gtfs.Alert)
+	m.rebuildMergedRealtimeLocked()
+}

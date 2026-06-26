@@ -1,0 +1,43 @@
+{
+  "$schema": "./config.schema.json",
+  "port": 4000,
+  "env": "development",
+  "api-keys": [
+    "test"
+  ],
+  "protected-api-keys": [
+    "your-secure-test-key-here"
+  ],
+  "exempt-api-keys": [
+    "org.onebusaway.iphone"
+  ],
+  "rate-limit": 100,
+  "log-level": "info",
+  "log-format": "text",
+  "gtfs-static-feed": {
+    "url": "https://www.soundtransit.org/GTFS-rail/40_gtfs.zip",
+    "enable-gtfs-tidy": false
+  },
+  "gtfs-rt-feeds": [
+    {
+      "id": "sound-transit",
+      "agency-ids": [
+        "40"
+      ],
+      "trip-updates-url": "https://api.pugetsound.onebusaway.org/api/gtfs_realtime/trip-updates-for-agency/40.pb?key=org.onebusaway.iphone",
+      "vehicle-positions-url": "https://api.pugetsound.onebusaway.org/api/gtfs_realtime/vehicle-positions-for-agency/40.pb?key=org.onebusaway.iphone"
+    },
+    {
+      "id": "metro-transit",
+      "agency-ids": [
+        "1"
+      ],
+      "trip-updates-url": "https://api.pugetsound.onebusaway.org/api/gtfs_realtime/trip-updates-for-agency/1.pb?key=org.onebusaway.iphone",
+      "headers": {
+        "X-API-Key": "my-secret-key"
+      },
+      "refresh-interval": 60
+    }
+  ],
+  "data-path": "./gtfs.db"
+}

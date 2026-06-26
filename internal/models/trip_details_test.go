@@ -1,0 +1,210 @@
+package models
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestNewTripDetails(t *testing.T) {
+	trip := Trip{
+		ID: "trip_123",
+	}
+
+	tripID := trip.ID
+	serviceDate := time.UnixMilli(1609459200000)
+
+	frequency := &Frequency{
+		StartTime:   NewModelTime(serviceDate.Add(8 * time.Hour)),
+		EndTime:     NewModelTime(serviceDate.Add(9 * time.Hour)),
+		Headway:     NewModelDuration(300 * time.Second),
+		ServiceDate: NewModelTime(serviceDate),
+		ServiceID:   "service_789",
+		TripID:      tripID,
+	}
+
+	status := &TripStatus{
+		VehicleID: "vehicle_789",
+		Status:    "in_progress",
+	}
+
+	schedule := &Schedule{
+		Frequency:      nil,
+		NextTripID:     "next_trip",
+		PreviousTripID: "prev_trip",
+		StopTimes:      []StopTime{},
+		TimeZone:       "America/Los_Angeles",
+	}
+
+	situationIDs := []string{"situation_1", "situation_2"}
+
+	tripDetails := NewTripDetails(tripID, serviceDate, frequency, status, schedule, situationIDs)
+
+	assert.Equal(t, tripID, tripDetails.TripID)
+	assert.Equal(t, serviceDate, tripDetails.ServiceDate.Time)
+	assert.Equal(t, frequency, tripDetails.Frequency)
+	assert.Equal(t, status, tripDetails.Status)
+	assert.Equal(t, schedule, tripDetails.Schedule)
+	assert.Equal(t, situationIDs, tripDetails.SituationIDs)
+}
+
+func TestNewEmptyTripDetails(t *testing.T) {
+	tripDetails := NewEmptyTripDetails()
+
+	assert.Equal(t, "", tripDetails.TripID)
+	assert.True(t, tripDetails.ServiceDate.Time.IsZero())
+	assert.Nil(t, tripDetails.Frequency)
+	assert.Nil(t, tripDetails.Status)
+	assert.Nil(t, tripDetails.Schedule)
+	assert.NotNil(t, tripDetails.SituationIDs)
+	assert.Empty(t, tripDetails.SituationIDs)
+}
+
+func TestTripDetailsJSON(t *testing.T) {
+	serviceDate := time.UnixMilli(1609459200000)
+	frequency := &Frequency{
+		StartTime:   NewModelTime(serviceDate.Add(8 * time.Hour)),
+		EndTime:     NewModelTime(serviceDate.Add(9 * time.Hour)),
+		Headway:     NewModelDuration(300 * time.Second),
+		ServiceDate: NewModelTime(serviceDate),
+		ServiceID:   "service_789",
+		TripID:      "trip_123",
+	}
+
+	status := NewTripStatus()
+	status.VehicleID = "vehicle_789"
+	status.Status = "in_progress"
+
+	schedule := &Schedule{
+		Frequency:      nil,
+		NextTripID:     "next_trip",
+		PreviousTripID: "prev_trip",
+		StopTimes:      []StopTime{},
+		TimeZone:       "America/Los_Angeles",
+	}
+
+	tripDetails := TripDetails{
+		TripID:       "trip_123",
+		ServiceDate:  NewModelTime(serviceDate),
+		Frequency:    frequency,
+		Status:       status,
+		Schedule:     schedule,
+		SituationIDs: []string{"situation_1"},
+	}
+
+	jsonData, err := json.Marshal(tripDetails)
+	assert.NoError(t, err)
+
+	var unmarshaledTripDetails TripDetails
+	err = json.Unmarshal(jsonData, &unmarshaledTripDetails)
+	assert.NoError(t, err)
+
+	assert.Equal(t, tripDetails.TripID, unmarshaledTripDetails.TripID)
+	assert.Equal(t, tripDetails.ServiceDate, unmarshaledTripDetails.ServiceDate)
+	assert.NotNil(t, unmarshaledTripDetails.Frequency)
+	assert.NotNil(t, unmarshaledTripDetails.Status)
+	assert.NotNil(t, unmarshaledTripDetails.Schedule)
+	assert.Equal(t, tripDetails.SituationIDs, unmarshaledTripDetails.SituationIDs)
+}
+
+func TestTripDetailsWithNilValues(t *testing.T) {
+	trip := Trip{ID: "trip_123"}
+	serviceDate := time.UnixMilli(1609459200000)
+
+	tripDetails := NewTripDetails(trip.ID, serviceDate, nil, nil, nil, nil)
+
+	assert.Equal(t, trip.ID, tripDetails.TripID)
+	assert.Equal(t, serviceDate, tripDetails.ServiceDate.Time)
+	assert.Nil(t, tripDetails.Frequency)
+	assert.Nil(t, tripDetails.Status)
+	assert.Nil(t, tripDetails.Schedule)
+	assert.Nil(t, tripDetails.SituationIDs)
+}
+
+func TestTripStatusJSON(t *testing.T) {
+	tripStatus := TripStatus{
+		ActiveTripID:               "active_trip_123",
+		BlockTripSequence:          2,
+		ClosestStop:                "stop_456",
+		ClosestStopTimeOffset:      120,
+		DistanceAlongTrip:          1500.5,
+		Frequency:                  nil,
+		LastKnownDistanceAlongTrip: 1400.0,
+		LastKnownLocation: &Location{
+			Lat: 38.542661,
+			Lon: -121.743914,
+		},
+		LastKnownOrientation:   90.0,
+		LastLocationUpdateTime: NewModelTime(time.UnixMilli(1609462700000)),
+		LastUpdateTime:         NewModelTime(time.UnixMilli(1609462800000)),
+		NextStop:               "stop_789",
+		NextStopTimeOffset:     240,
+		OccupancyCapacity:      50,
+		OccupancyCount:         30,
+		OccupancyStatus:        "MANY_SEATS_AVAILABLE",
+		Orientation:            95.0,
+		Phase:                  "in_progress",
+		Position: Location{
+			Lat: 38.543000,
+			Lon: -121.744000,
+		},
+		Predicted:                  true,
+		ScheduleDeviation:          60,
+		ScheduledDistanceAlongTrip: 1450.0,
+		ServiceDate:                NewModelTime(time.UnixMilli(1609459200000)),
+		SituationIDs:               []string{"situation_1"},
+		Status:                     "SCHEDULED",
+		TotalDistanceAlongTrip:     5000.0,
+		VehicleFeatures:            []string{"wifi", "bike_rack"},
+		VehicleID:                  "vehicle_789",
+		Scheduled:                  false,
+	}
+
+	jsonData, err := json.Marshal(tripStatus)
+	assert.NoError(t, err)
+
+	var unmarshaledStatus TripStatus
+	err = json.Unmarshal(jsonData, &unmarshaledStatus)
+	assert.NoError(t, err)
+
+	assert.Equal(t, tripStatus.VehicleID, unmarshaledStatus.VehicleID)
+	assert.Equal(t, tripStatus.Status, unmarshaledStatus.Status)
+	assert.Equal(t, tripStatus.Phase, unmarshaledStatus.Phase)
+	assert.Equal(t, tripStatus.Predicted, unmarshaledStatus.Predicted)
+	assert.Equal(t, tripStatus.Position.Lat, unmarshaledStatus.Position.Lat)
+	assert.Equal(t, tripStatus.Position.Lon, unmarshaledStatus.Position.Lon)
+	assert.Equal(t, tripStatus.Scheduled, unmarshaledStatus.Scheduled)
+}
+
+func TestTripStatus_JSONAlwaysPresent(t *testing.T) {
+	status := *NewTripStatus()
+	status.Status = "default"
+
+	data, err := json.Marshal(status)
+	require.NoError(t, err)
+	jsonStr := string(data)
+
+	// All fields must always be present in JSON (no omitempty on value types)
+	assert.Contains(t, jsonStr, `"scheduleDeviation":0`, "scheduleDeviation must always be present")
+	assert.Contains(t, jsonStr, `"distanceAlongTrip":0`, "distanceAlongTrip must always be present")
+	assert.Contains(t, jsonStr, `"closestStopTimeOffset":0`, "closestStopTimeOffset must always be present")
+	assert.Contains(t, jsonStr, `"orientation":0`, "orientation must always be present")
+	assert.Contains(t, jsonStr, `"lastKnownDistanceAlongTrip":0`, "lastKnownDistanceAlongTrip must always be present")
+	assert.Contains(t, jsonStr, `"lastKnownOrientation":0`, "lastKnownOrientation must always be present")
+	assert.Contains(t, jsonStr, `"lastLocationUpdateTime":0`, "lastLocationUpdateTime must always be present")
+	assert.Contains(t, jsonStr, `"lastUpdateTime":0`, "lastUpdateTime must always be present")
+	assert.Contains(t, jsonStr, `"totalDistanceAlongTrip":0`, "totalDistanceAlongTrip must always be present")
+	assert.Contains(t, jsonStr, `"scheduledDistanceAlongTrip":0`, "scheduledDistanceAlongTrip must always be present")
+	assert.Contains(t, jsonStr, `"occupancyCapacity":-1`, "occupancyCapacity must default to -1")
+	assert.Contains(t, jsonStr, `"occupancyCount":-1`, "occupancyCount must default to -1")
+	assert.Contains(t, jsonStr, `"vehicleFeatures":[]`, "vehicleFeatures must always be present as empty array")
+	assert.Contains(t, jsonStr, `"situationIds":[]`, "situationIds must always be present as empty array")
+
+	// String fields always present even when empty
+	assert.Contains(t, jsonStr, `"closestStop":""`, "closestStop must always be present")
+	assert.Contains(t, jsonStr, `"occupancyStatus":""`, "occupancyStatus must always be present")
+	assert.Contains(t, jsonStr, `"vehicleId":""`, "vehicleId must always be present")
+}

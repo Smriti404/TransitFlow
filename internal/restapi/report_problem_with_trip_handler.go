@@ -1,0 +1,80 @@
+package restapi
+
+import (
+	"net/http"
+
+	"transitflow/gtfsdb"
+	"transitflow/internal/logging"
+	"transitflow/internal/models"
+	"transitflow/internal/nulls"
+	"transitflow/internal/utils"
+)
+
+// reportProblemWithTripHandler accepts a user-submitted problem report for a specific trip
+// and persists it to the database.
+func (api *RestAPI) reportProblemWithTripHandler(w http.ResponseWriter, r *http.Request) {
+	agencyID, tripID, ok := api.extractAndValidateAgencyCodeID(w, r)
+	if !ok {
+		return
+	}
+	// The raw GTFS trip ID (e.g., "t_123")
+	compositeID := utils.FormCombinedID(agencyID, tripID) // The API ID (e.g., "1_t_123")
+
+	// Safety check: Ensure DB is initialized
+	if api.GtfsManager == nil || api.GtfsManager.GtfsDB == nil || api.GtfsManager.GtfsDB.Queries == nil {
+		api.Logger.Error("report problem with trip failed: GTFS DB not initialized")
+		http.Error(w, `{"code":500, "text":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	query := r.URL.Query()
+
+	serviceDate := query.Get("serviceDate")
+	vehicleID := query.Get("vehicleId")
+	stopID := query.Get("stopId")
+	code := query.Get("code")
+	userComment := utils.TruncateComment(query.Get("userComment"))
+	userOnVehicle := query.Get("userOnVehicle")
+	userVehicleNumber := query.Get("userVehicleNumber")
+	userLatStr := utils.ValidateNumericParam(query.Get("userLat"))
+	userLonStr := utils.ValidateNumericParam(query.Get("userLon"))
+	userLocationAccuracy := utils.ValidateNumericParam(query.Get("userLocationAccuracy"))
+
+	// Log the problem report for observability
+	logger := logging.FromContext(r.Context()).With("component", "problem_reporting")
+	logger.Info("problem_report_received_for_trip",
+		"trip_id", tripID,
+		"composite_id", compositeID,
+		"code", code,
+		"service_date", serviceDate,
+		"vehicle_id", vehicleID,
+		"stop_id", stopID)
+
+	// Store the problem report in the database
+	now := api.Clock.Now().UnixMilli()
+	params := gtfsdb.CreateProblemReportTripParams{
+		TripID:               tripID,
+		ServiceDate:          nulls.String(serviceDate),
+		VehicleID:            nulls.String(vehicleID),
+		StopID:               nulls.String(stopID),
+		Code:                 nulls.String(code),
+		UserComment:          nulls.String(userComment),
+		UserLat:              gtfsdb.ParseNullFloat(userLatStr),
+		UserLon:              gtfsdb.ParseNullFloat(userLonStr),
+		UserLocationAccuracy: gtfsdb.ParseNullFloat(userLocationAccuracy),
+		UserOnVehicle:        gtfsdb.ParseNullBool(userOnVehicle),
+		UserVehicleNumber:    nulls.String(userVehicleNumber),
+		CreatedAt:            now,
+		SubmittedAt:          now,
+	}
+
+	err := api.GtfsManager.GtfsDB.Queries.CreateProblemReportTrip(r.Context(), params)
+	if err != nil {
+		logger.Error("failed to store problem report", "error", err,
+			"trip_id", tripID)
+		http.Error(w, `{"code":500, "text":"failed to store problem report"}`, http.StatusInternalServerError)
+		return
+	}
+
+	api.sendResponse(w, r, models.NewOKResponse(struct{}{}, api.Clock))
+}

@@ -1,0 +1,1325 @@
+-- name: GetAgency :one
+SELECT
+    *
+FROM
+    agencies
+WHERE
+    id = ?
+LIMIT
+    1;
+
+-- name: GetAgenciesByIDs :many
+SELECT
+    *
+FROM
+    agencies
+WHERE
+    id IN (sqlc.slice('agency_ids'));
+
+-- name: ListAgencies :many
+SELECT
+    *
+FROM
+    agencies
+ORDER BY
+    id;
+
+-- name: ListAgencyIds :many
+SELECT
+    id
+FROM
+    agencies
+ORDER BY
+    id;
+
+-- name: CreateAgency :one
+INSERT
+OR REPLACE INTO agencies (
+    id,
+    name,
+    url,
+    timezone,
+    lang,
+    phone,
+    fare_url,
+    email
+)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;
+
+-- name: CreateRoute :one
+INSERT
+OR REPLACE INTO routes (
+    id,
+    agency_id,
+    short_name,
+    long_name,
+    desc,
+    type,
+    url,
+    color,
+    text_color,
+    continuous_pickup,
+    continuous_drop_off
+)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;
+
+-- name: CreateStop :one
+INSERT
+OR REPLACE INTO stops (
+    id,
+    code,
+    name,
+    desc,
+    lat,
+    lon,
+    zone_id,
+    url,
+    location_type,
+    timezone,
+    wheelchair_boarding,
+    platform_code,
+    direction,
+    parent_station
+)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;
+
+-- name: CreateCalendar :one
+INSERT
+OR REPLACE INTO calendar (
+    id,
+    monday,
+    tuesday,
+    wednesday,
+    thursday,
+    friday,
+    saturday,
+    sunday,
+    start_date,
+    end_date
+)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;
+
+-- name: CreateShape :one
+INSERT
+OR REPLACE INTO shapes (shape_id, lat, lon, shape_pt_sequence, shape_dist_traveled)
+VALUES
+    (?, ?, ?, ?, ?) RETURNING *;
+
+-- name: CreateStopTime :one
+INSERT
+OR REPLACE INTO stop_times (
+    trip_id,
+    arrival_time,
+    departure_time,
+    stop_id,
+    stop_sequence,
+    stop_headsign,
+    pickup_type,
+    drop_off_type,
+    shape_dist_traveled,
+    timepoint
+)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;
+
+-- name: CreateFrequency :exec
+INSERT OR IGNORE INTO frequencies (
+    trip_id,
+    start_time,
+    end_time,
+    headway_secs,
+    exact_times
+) VALUES (?, ?, ?, ?, ?);
+
+-- name: GetFrequenciesForTrip :many
+SELECT * FROM frequencies
+WHERE trip_id = ?
+ORDER BY start_time;
+
+-- name: GetFrequenciesForTrips :many
+SELECT * FROM frequencies
+WHERE trip_id IN (sqlc.slice('trip_ids'))
+ORDER BY trip_id, start_time;
+
+-- name: GetFrequencyTripIDs :many
+SELECT DISTINCT trip_id FROM frequencies;
+
+-- name: CreateTrip :one
+INSERT
+OR REPLACE INTO trips (
+    id,
+    route_id,
+    service_id,
+    trip_headsign,
+    trip_short_name,
+    direction_id,
+    block_id,
+    shape_id,
+    wheelchair_accessible,
+    bikes_allowed,
+    min_arrival_time,
+    max_departure_time
+)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *;
+
+-- name: BulkUpdateTripTimeBounds :exec
+UPDATE trips
+SET
+    min_arrival_time   = (SELECT MIN(arrival_time)   FROM stop_times WHERE trip_id = trips.id),
+    max_departure_time = (SELECT MAX(departure_time) FROM stop_times WHERE trip_id = trips.id)
+WHERE min_arrival_time IS NULL OR max_departure_time IS NULL;
+
+-- name: CreateCalendarDate :one
+INSERT
+OR REPLACE INTO calendar_dates (service_id, date, exception_type)
+VALUES
+    (?, ?, ?) RETURNING *;
+
+-- name: ListRoutes :many
+SELECT
+    id,
+    agency_id,
+    short_name,
+    long_name,
+    "desc",
+    type,
+    url,
+    color,
+    text_color,
+    continuous_pickup,
+    continuous_drop_off
+FROM
+    routes
+ORDER BY
+    agency_id,
+    id;
+
+
+-- name: GetRouteIDsForAgency :many
+SELECT
+    r.id
+FROM
+    routes r
+    JOIN agencies a ON r.agency_id = a.id
+WHERE
+    a.id = ?;
+
+-- name: GetRouteIDsForStop :many
+SELECT DISTINCT
+    (routes.agency_id || '_' || routes.id) AS route_id
+FROM
+    stop_times
+    JOIN trips ON stop_times.trip_id = trips.id
+    JOIN routes ON trips.route_id = routes.id
+WHERE
+    stop_times.stop_id = ?;
+
+-- name: GetRoutesForAgency :many
+SELECT
+    routes.id,
+    routes.short_name,
+    routes.long_name,
+    routes."desc",
+    routes.type,
+    routes.url,
+    routes.color,
+    routes.text_color
+FROM
+    routes
+WHERE
+    routes.agency_id = ?;
+
+-- name: GetAgencyForStop :one
+SELECT DISTINCT
+    a.id,
+    a.name,
+    a.url,
+    a.timezone,
+    a.lang,
+    a.phone,
+    a.fare_url,
+    a.email
+FROM
+    agencies a
+    JOIN routes r ON a.id = r.agency_id
+    JOIN trips t ON r.id = t.route_id
+    JOIN stop_times st ON t.id = st.trip_id
+WHERE
+    st.stop_id = ?
+ORDER BY
+    a.id
+LIMIT
+    1;
+
+-- name: GetAllStopIDs :many
+SELECT
+    id
+FROM
+    stops;
+
+-- name: GetStopIDsForAgency :many
+SELECT DISTINCT
+    s.id
+FROM
+    stops s
+    JOIN stop_times st ON s.id = st.stop_id
+    JOIN trips t ON st.trip_id = t.id
+    JOIN routes r ON t.route_id = r.id
+WHERE
+    r.agency_id = ?;
+
+-- name: GetTrip :one
+SELECT
+    *
+FROM
+    trips
+WHERE
+    id = ?;
+
+-- name: GetRoute :one
+SELECT
+    *
+FROM
+    routes
+WHERE
+    id = ?;
+
+-- name: GetStop :one
+SELECT
+    id,
+    code,
+    name,
+    desc,
+    lat,
+    lon,
+    zone_id,
+    url,
+    location_type,
+    timezone,
+    wheelchair_boarding,
+    platform_code,
+    direction,
+    parent_station
+FROM
+    stops
+WHERE
+    id = ?
+LIMIT
+    1;
+
+-- name: GetStopForAgency :one
+-- Return the stop only if it is served by any route that belongs to the specified agency.
+-- We join stop_times -> trips -> routes and filter by routes.agency_id to enforce agency ownership.
+SELECT DISTINCT
+    stops.id,
+    stops.code,
+    stops.name,
+    stops."desc",
+    stops.lat,
+    stops.lon,
+    stops.zone_id,
+    stops.url,
+    stops.location_type,
+    stops.timezone,
+    stops.wheelchair_boarding,
+    stops.platform_code,
+    stops.direction
+FROM
+    stops
+    JOIN stop_times ON stops.id = stop_times.stop_id
+    JOIN trips ON stop_times.trip_id = trips.id
+    JOIN routes ON trips.route_id = routes.id
+WHERE
+    stops.id = ?
+    AND routes.agency_id = ?;
+
+-- name: ListStops :many
+SELECT
+    *
+FROM
+    stops
+ORDER BY
+    id;
+
+-- name: GetActiveStops :many
+SELECT DISTINCT
+    s.*
+FROM
+    stops s
+    INNER JOIN stop_times st ON s.id = st.stop_id;
+
+-- name: GetRoutesForStop :many
+SELECT DISTINCT
+    routes.id,
+    routes.agency_id,
+    routes.short_name,
+    routes.long_name,
+    routes."desc",
+    routes.type,
+    routes.url,
+    routes.color,
+    routes.text_color
+FROM
+    stop_times
+    JOIN trips ON stop_times.trip_id = trips.id
+    JOIN routes ON trips.route_id = routes.id
+WHERE
+    stop_times.stop_id = ?;
+
+-- name: GetAllShapes :many
+SELECT
+    *
+FROM
+    shapes;
+
+-- name: GetShapeByID :many
+SELECT
+    *
+FROM
+    shapes
+WHERE
+    shape_id = ?
+ORDER BY
+    shape_pt_sequence;
+
+-- name: GetStopIDsForRoute :many
+SELECT DISTINCT
+    stop_times.stop_id
+FROM
+    stop_times
+        JOIN trips ON stop_times.trip_id = trips.id
+WHERE
+    trips.route_id = ?;
+
+-- name: GetAllTripsForRoute :many
+SELECT DISTINCT *
+FROM trips t
+WHERE t.route_id = @route_id
+ORDER BY t.direction_id, t.trip_headsign;
+
+-- name: GetStopIDsForTrip :many
+SELECT DISTINCT
+    stop_times.stop_id
+FROM
+    stop_times
+WHERE
+    stop_times.trip_id = ?;
+
+-- name: GetShapesGroupedByTripHeadSign :many
+SELECT DISTINCT s.lat, s.lon, s.shape_pt_sequence
+FROM shapes s
+         JOIN (
+    SELECT shape_id
+    FROM trips
+    WHERE route_id = @route_id
+      AND trip_headsign = @trip_headsign
+      AND shape_id IS NOT NULL
+    ORDER BY id
+    LIMIT 1
+) t ON s.shape_id = t.shape_id
+ORDER BY s.shape_pt_sequence;
+
+-- name: GetActiveServiceIDsForDate :many
+WITH formatted_date AS (
+    SELECT STRFTIME('%w', SUBSTR(?1, 1, 4) || '-' || SUBSTR(?1, 5, 2) || '-' || SUBSTR(?1, 7, 2)) AS weekday
+),
+base_services AS (
+    SELECT c.id AS service_id
+    FROM calendar c, formatted_date fd
+    WHERE c.start_date <= ?1
+      AND c.end_date >= ?1
+      AND (
+        (fd.weekday = '0' AND c.sunday = 1) OR
+        (fd.weekday = '1' AND c.monday = 1) OR
+        (fd.weekday = '2' AND c.tuesday = 1) OR
+        (fd.weekday = '3' AND c.wednesday = 1) OR
+        (fd.weekday = '4' AND c.thursday = 1) OR
+        (fd.weekday = '5' AND c.friday = 1) OR
+        (fd.weekday = '6' AND c.saturday = 1)
+      )
+),
+removed_services AS (
+    SELECT service_id
+    FROM calendar_dates
+    WHERE date = ?1
+      AND exception_type = 2
+),
+added_services AS (
+    SELECT service_id
+    FROM calendar_dates
+    WHERE date = ?1
+      AND exception_type = 1
+)
+SELECT DISTINCT service_id
+FROM base_services
+WHERE service_id NOT IN (SELECT service_id FROM removed_services)
+UNION
+SELECT DISTINCT service_id FROM added_services;
+
+-- name: GetTripsForRouteInActiveServiceIDs :many
+SELECT DISTINCT *
+FROM trips t
+WHERE t.route_id = @route_id
+  AND t.service_id IN (sqlc.slice(('service_ids')))
+ORDER BY t.direction_id, t.trip_headsign;
+
+-- name: GetOrderedStopIDsForTrip :many
+SELECT stop_id
+FROM stop_times
+WHERE trip_id = ?
+ORDER BY stop_sequence;
+
+-- name: GetOrderedStopIDsForRouteDirection :many
+SELECT st.stop_id
+FROM stop_times st
+JOIN trips t ON t.id = st.trip_id
+WHERE t.route_id = @route_id
+  AND t.direction_id = @direction_id
+  AND t.service_id IN (sqlc.slice('service_ids'))
+GROUP BY st.stop_id
+ORDER BY MAX(st.stop_sequence);
+
+-- name: GetScheduleForStop :many
+SELECT
+    st.trip_id,
+    st.arrival_time,
+    st.departure_time,
+    st.stop_headsign,
+    t.service_id,
+    t.route_id,
+    t.trip_headsign,
+    r.id as route_id,
+    r.agency_id
+FROM
+    stop_times st
+    JOIN trips t ON st.trip_id = t.id
+    JOIN routes r ON t.route_id = r.id
+WHERE
+    st.stop_id = ?
+ORDER BY
+    r.id, st.departure_time;
+
+-- name: GetScheduleForStopOnDate :many
+SELECT
+    st.trip_id,
+    st.arrival_time,
+    st.departure_time,
+    st.stop_headsign,
+    t.service_id,
+    t.route_id,
+    t.trip_headsign,
+    r.id as route_id,
+    r.agency_id
+FROM
+    stop_times st
+    JOIN trips t ON st.trip_id = t.id
+    JOIN routes r ON t.route_id = r.id
+    LEFT JOIN (
+        SELECT c.id AS service_id
+        FROM calendar c
+        WHERE c.start_date <= @target_date
+          AND c.end_date >= @target_date
+          AND (
+            (@weekday = 'sunday' AND c.sunday = 1) OR
+            (@weekday = 'monday' AND c.monday = 1) OR
+            (@weekday = 'tuesday' AND c.tuesday = 1) OR
+            (@weekday = 'wednesday' AND c.wednesday = 1) OR
+            (@weekday = 'thursday' AND c.thursday = 1) OR
+            (@weekday = 'friday' AND c.friday = 1) OR
+            (@weekday = 'saturday' AND c.saturday = 1)
+          )
+    ) base ON t.service_id = base.service_id
+    LEFT JOIN (
+        SELECT cd.service_id
+        FROM calendar_dates cd
+        WHERE cd.date = @target_date AND cd.exception_type = 2
+    ) removed ON t.service_id = removed.service_id
+    LEFT JOIN (
+        SELECT cd.service_id
+        FROM calendar_dates cd
+        WHERE cd.date = @target_date AND cd.exception_type = 1
+    ) added ON t.service_id = added.service_id
+WHERE
+    st.stop_id = @stop_id
+    AND (
+        (base.service_id IS NOT NULL AND removed.service_id IS NULL)
+        OR
+        added.service_id IS NOT NULL
+    )
+    AND r.id IN (sqlc.slice('route_ids'))
+ORDER BY
+    r.id, st.departure_time;
+
+
+-- name: GetImportMetadata :one
+SELECT
+    *
+FROM
+    import_metadata
+WHERE
+    id = 1;
+
+-- name: UpsertImportMetadata :one
+INSERT
+OR REPLACE INTO import_metadata (
+    id,
+    file_hash,
+    import_time,
+    file_source
+)
+VALUES
+    (1, ?, ?, ?) RETURNING *;
+
+-- name: UpdateFeedExpiresAt :exec
+INSERT INTO import_metadata (id, file_hash, import_time, file_source, feed_expires_at)
+VALUES (1, '', 0, '', ?)
+ON CONFLICT(id) DO UPDATE SET feed_expires_at = excluded.feed_expires_at;
+
+-- name: UpdateImportTime :exec
+INSERT INTO import_metadata (id, file_hash, import_time, file_source)
+VALUES (1, '', ?, '')
+ON CONFLICT(id) DO UPDATE SET import_time = excluded.import_time;
+
+-- name: ClearStopTimes :exec
+DELETE FROM stop_times;
+
+-- name: ClearFrequencies :exec
+DELETE FROM frequencies;
+
+-- name: ClearShapes :exec
+DELETE FROM shapes;
+
+-- name: ClearTrips :exec
+DELETE FROM trips;
+
+-- name: ClearCalendar :exec
+DELETE FROM calendar;
+
+-- name: ClearCalendarDates :exec
+DELETE FROM calendar_dates;
+
+-- name: ClearStops :exec
+DELETE FROM stops;
+
+-- name: ClearRoutes :exec
+DELETE FROM routes;
+
+-- name: ClearAgencies :exec
+DELETE FROM agencies;
+
+
+-- Batch queries to solve N+1 problems
+
+-- name: GetRoutesForStops :many
+SELECT DISTINCT
+    routes.id,
+    routes.agency_id,
+    routes.short_name,
+    routes.long_name,
+    routes."desc",
+    routes.type,
+    routes.url,
+    routes.color,
+    routes.text_color,
+    stop_times.stop_id
+FROM
+    stop_times
+    JOIN trips ON stop_times.trip_id = trips.id
+    JOIN routes ON trips.route_id = routes.id
+WHERE
+    stop_times.stop_id IN (sqlc.slice('stop_ids'));
+
+-- name: GetRouteIDsForStops :many
+SELECT DISTINCT
+    routes.agency_id || '_' || routes.id AS route_id,
+    stop_times.stop_id
+FROM
+    stop_times
+    JOIN trips ON stop_times.trip_id = trips.id
+    JOIN routes ON trips.route_id = routes.id
+WHERE
+    stop_times.stop_id IN (sqlc.slice('stop_ids'));
+
+-- name: GetActiveRouteIDsForStopsOnDate :many
+SELECT DISTINCT
+    routes.agency_id || '_' || routes.id AS route_id,
+    stop_times.stop_id
+FROM
+    stop_times
+    JOIN trips ON stop_times.trip_id = trips.id
+    JOIN routes ON trips.route_id = routes.id
+WHERE
+    stop_times.stop_id IN (sqlc.slice('stop_ids'))
+    AND trips.service_id IN (sqlc.slice('service_ids'));
+
+-- name: GetAgenciesForStops :many
+SELECT DISTINCT
+    a.id,
+    a.name,
+    a.url,
+    a.timezone,
+    a.lang,
+    a.phone,
+    a.fare_url,
+    a.email,
+    stop_times.stop_id
+FROM
+    stop_times
+    JOIN trips ON stop_times.trip_id = trips.id
+    JOIN routes ON trips.route_id = routes.id
+    JOIN agencies a ON routes.agency_id = a.id
+WHERE
+    stop_times.stop_id IN (sqlc.slice('stop_ids'));
+
+-- name: GetStopTimesForTrip :many
+SELECT
+    *
+FROM
+    stop_times
+WHERE
+    trip_id = ?
+ORDER BY
+    stop_sequence;
+
+-- name: GetTripsByBlockID :many
+SELECT
+    id,
+    route_id,
+    service_id,
+    trip_headsign,
+    trip_short_name,
+    direction_id,
+    block_id,
+    shape_id
+FROM
+    trips
+WHERE
+    block_id = ?;
+
+-- name: GetCalendarByServiceID :one
+SELECT
+    *
+FROM
+    calendar
+WHERE
+    id = ?;
+
+-- name: GetCalendarDateExceptionsForServiceID :many
+SELECT
+    *
+FROM
+    calendar_dates
+WHERE
+    service_id = ?;
+
+-- name: GetStopsForRoute :many
+SELECT DISTINCT
+    stops.id,
+    stops.code,
+    stops.name,
+    stops."desc",
+    stops.lat,
+    stops.lon,
+    stops.zone_id,
+    stops.url,
+    stops.location_type,
+    stops.timezone,
+    stops.wheelchair_boarding,
+    stops.platform_code,
+    stops.direction
+FROM
+    stop_times
+    JOIN trips ON stop_times.trip_id = trips.id
+    JOIN routes ON trips.route_id = routes.id
+    JOIN stops ON stop_times.stop_id = stops.id
+WHERE
+    routes.id = ?;
+
+-- name: GetShapePointsByTripID :many
+SELECT
+    s.id,
+    s.shape_id,
+    s.lat,
+    s.lon,
+    s.shape_pt_sequence,
+    s.shape_dist_traveled
+FROM
+    shapes s
+    JOIN trips t ON t.shape_id = s.shape_id
+WHERE
+    t.id = ?
+ORDER BY
+    s.shape_pt_sequence ASC;
+
+-- name: GetStopsWithShapeContextByIDs :many
+SELECT
+    st.stop_id,
+    t.shape_id,
+    s.lat,
+    s.lon,
+    st.shape_dist_traveled
+FROM stop_times st
+JOIN trips t ON st.trip_id = t.id
+JOIN stops s ON st.stop_id = s.id
+WHERE st.stop_id IN (sqlc.slice('stop_ids'));
+
+-- name: GetTripsByBlockIDOrdered :many
+SELECT
+    t.id,
+    t.block_id,
+    t.service_id,
+    t.min_arrival_time AS earliest_time,
+    t.max_departure_time AS latest_time
+FROM trips t
+WHERE t.block_id = ?
+  AND t.service_id IN (sqlc.slice('service_ids'))
+ORDER BY t.min_arrival_time;
+
+-- name: GetBlockIDByTripID :one
+SELECT
+    block_id
+FROM
+    trips
+WHERE
+    id = ?;
+
+-- name: GetStopsByIDs :many
+SELECT
+    *
+FROM
+    stops
+WHERE
+    id IN (sqlc.slice('stop_ids'))
+ORDER BY
+    id;
+
+-- name: GetRoutesByIDs :many
+SELECT
+    *
+FROM
+    routes
+WHERE
+    id IN (sqlc.slice('route_ids'))
+ORDER BY
+    id;
+
+-- name: GetTripsByIDs :many
+SELECT
+    *
+FROM
+    trips
+WHERE
+    id IN (sqlc.slice('trip_ids'))
+ORDER BY
+    id;
+
+-- name: GetBlockDetails :many
+SELECT
+    t.service_id,
+    t.id as trip_id,
+    t.route_id,
+    st.arrival_time,
+    st.departure_time,
+    st.stop_id,
+    st.stop_sequence,
+    st.pickup_type,
+    st.drop_off_type,
+    s.lat,
+    s.lon
+FROM
+    trips t
+        JOIN
+    stop_times st ON t.id = st.trip_id
+        JOIN
+    stops s ON st.stop_id = s.id
+WHERE
+    t.block_id = ?
+ORDER BY
+    t.id, st.stop_sequence;
+
+-- name: GetStopTimesByStopIDs :many
+SELECT
+    *
+FROM
+    stop_times
+WHERE
+    stop_id IN (sqlc.slice('stop_ids'));
+
+-- name: ListTrips :many
+SELECT
+    *
+FROM
+    trips;
+
+-- name: ListTripsWithLimit :many
+SELECT
+    *
+FROM
+    trips
+LIMIT ?;
+
+-- name: CountAgencies :one
+SELECT COUNT(*) FROM agencies;
+
+-- name: CountRoutes :one
+SELECT COUNT(*) FROM routes;
+
+-- name: CountStops :one
+SELECT COUNT(*) FROM stops;
+
+-- name: CountTrips :one
+SELECT COUNT(*) FROM trips;
+
+-- name: GetArrivalsAndDeparturesForStop :many
+SELECT
+    st.trip_id,
+    st.arrival_time,
+    st.departure_time,
+    st.stop_sequence,
+    st.stop_headsign,
+    t.service_id,
+    t.route_id,
+    t.trip_headsign,
+    t.block_id,
+    r.id as route_id,
+    r.agency_id,
+    r.short_name as route_short_name,
+    r.long_name as route_long_name
+FROM
+    stop_times st
+        JOIN trips t ON st.trip_id = t.id
+        JOIN routes r ON t.route_id = r.id
+WHERE
+    st.stop_id = ?
+ORDER BY
+    st.arrival_time LIMIT 50;
+-- name: GetTripsByServiceID :many
+SELECT id, route_id, service_id, trip_headsign
+FROM trips
+WHERE service_id IN (sqlc.slice('service_ids'));
+
+-- name: GetShapePointsForTrip :many
+SELECT DISTINCT shapes.lat, shapes.lon, shapes.shape_pt_sequence
+FROM shapes
+JOIN trips ON trips.shape_id = shapes.shape_id
+WHERE trips.id = ?
+ORDER BY shapes.shape_pt_sequence;
+
+-- name: GetNextStopInTrip :one
+SELECT stops.lat, stops.lon, stops.id
+FROM stop_times
+JOIN stops ON stops.id = stop_times.stop_id
+WHERE stop_times.trip_id = ?
+  AND stop_times.stop_sequence > ?
+ORDER BY stop_times.stop_sequence ASC
+LIMIT 1;
+
+-- name: GetStopsWithTripContext :many
+SELECT
+    s.id, s.lat, s.lon, s.name, s.code,
+    st.trip_id, st.stop_sequence,
+    t.shape_id
+FROM stops s
+JOIN stop_times st ON s.id = st.stop_id
+JOIN trips t ON st.trip_id = t.id
+WHERE s.id = ?;
+
+-- name: GetStopTimesForStopInWindow :many
+SELECT
+    st.trip_id,
+    st.arrival_time,
+    st.departure_time,
+    st.stop_id,
+    st.stop_sequence,
+    st.stop_headsign,
+    t.route_id,
+    t.service_id,
+    t.trip_headsign,
+    t.block_id
+FROM stop_times st
+         JOIN trips t ON st.trip_id = t.id
+WHERE st.stop_id = @stop_id
+  AND (
+    (st.arrival_time BETWEEN @window_start_nanos AND @window_end_nanos)
+        OR
+    (st.departure_time BETWEEN @window_start_nanos AND @window_end_nanos)
+    )
+ORDER BY st.arrival_time;
+
+-- name: UpdateStopDirection :exec
+UPDATE stops
+SET direction = ?
+WHERE id = ?;
+
+-- name: GetStopsWithShapeContext :many
+SELECT
+    s.id, s.lat, s.lon, s.name, s.code, s.direction,
+    st.trip_id, st.stop_sequence, st.shape_dist_traveled,
+    t.shape_id
+FROM stops s
+JOIN stop_times st ON s.id = st.stop_id
+JOIN trips t ON st.trip_id = t.id
+WHERE s.id = ?;
+
+-- name: GetShapePointWindow :many
+SELECT lat, lon, shape_pt_sequence, shape_dist_traveled
+FROM shapes
+WHERE shape_id = ?
+  AND shape_pt_sequence BETWEEN ? AND ?
+ORDER BY shape_pt_sequence;
+
+-- name: GetShapePointsWithDistance :many
+SELECT lat, lon, shape_pt_sequence, shape_dist_traveled
+FROM shapes
+WHERE shape_id = ?
+ORDER BY shape_pt_sequence;
+
+
+
+-- BlockTripIndex queries
+
+-- name: CreateBlockTripIndex :one
+INSERT INTO block_trip_index (
+    index_key,
+    service_ids,
+    stop_sequence_key,
+    created_at
+)
+VALUES
+    (?, ?, ?, ?)
+RETURNING id;
+
+-- name: CreateBlockTripEntry :exec
+INSERT INTO block_trip_entry (
+    block_trip_index_id,
+    trip_id,
+    block_id,
+    service_id,
+    block_trip_sequence
+)
+VALUES
+    (?, ?, ?, ?, ?);
+
+-- name: ClearBlockTripEntries :exec
+DELETE FROM block_trip_entry;
+
+-- name: ClearBlockTripIndices :exec
+DELETE FROM block_trip_index;
+
+-- name: CreateBlockLayover :exec
+INSERT INTO block_layover (
+    block_id,
+    service_id,
+    route_id,
+    layover_stop_id,
+    layover_start,
+    layover_end,
+    next_trip_id
+)
+VALUES
+    (?, ?, ?, ?, ?, ?, ?);
+
+-- name: ClearBlockLayovers :exec
+DELETE FROM block_layover;
+
+-- name: GetActiveLayoverBlockIDsForRoute :many
+-- Return distinct block IDs whose layover overlaps the given time window for the
+-- specified route + active service IDs. Replaces the in-memory
+-- GetBlocksInTimeRange traversal with one indexed range scan per call.
+-- Slice param is last so non-slice param numbering stays contiguous (?1, ?2, ?3)
+-- when the slice is empty and sqlc expands it to NULL.
+SELECT DISTINCT block_id
+FROM block_layover
+WHERE route_id = sqlc.arg('route_id')
+  AND layover_start < sqlc.arg('time_range_end')
+  AND layover_end > sqlc.arg('time_range_start')
+  AND service_id IN (sqlc.slice('service_ids'));
+
+-- name: GetBlockTripIndexIDsForRoute :many
+-- Get all block_trip_index IDs that contain trips for the specified route and service IDs
+SELECT DISTINCT bti.id
+FROM block_trip_index bti
+JOIN block_trip_entry bte ON bti.id = bte.block_trip_index_id
+JOIN trips t ON bte.trip_id = t.id
+WHERE t.route_id = sqlc.arg('route_id')
+  AND bte.service_id IN (sqlc.slice('service_ids'))
+ORDER BY bti.id;
+
+-- name: GetTripsByBlockTripIndexIDs :many
+-- Get all trips that belong to the specified block_trip_index IDs within a time window
+-- Matches Java's findBlockTripsInRange logic using binary search on maxDepartures and minArrivals
+-- A trip is active if: maxDeparture >= timeFrom (could have started) AND minArrival <= timeTo (could still be active)
+SELECT DISTINCT
+    t.id, t.route_id, t.service_id, t.trip_headsign, t.trip_short_name,
+    t.direction_id, t.block_id, t.shape_id, t.wheelchair_accessible, t.bikes_allowed,
+    bte.block_trip_sequence
+FROM trips t
+JOIN block_trip_entry bte ON t.id = bte.trip_id
+WHERE t.max_departure_time >= sqlc.arg('from_time')
+  AND t.min_arrival_time <= sqlc.arg('to_time')
+  AND bte.block_trip_index_id IN (sqlc.slice('index_ids'))
+  AND bte.service_id IN (sqlc.slice('service_ids'))
+ORDER BY t.route_id, bte.block_trip_sequence, t.id;
+
+-- name: GetActiveTripForRouteAtTime :one
+-- Find the ONE trip from a specific route that is active at the given time
+-- A trip is active if current_time falls within its stop times
+SELECT
+    t.id, t.route_id, t.service_id, t.trip_headsign, t.trip_short_name,
+    t.direction_id, t.block_id, t.shape_id, t.wheelchair_accessible, t.bikes_allowed
+FROM trips t
+JOIN block_trip_entry bte ON t.id = bte.trip_id
+WHERE t.route_id = sqlc.arg('route_id')
+  AND t.min_arrival_time <= sqlc.arg('current_time')
+  AND t.max_departure_time >= sqlc.arg('from_time')
+  AND bte.block_trip_index_id IN (sqlc.slice('index_ids'))
+  AND bte.service_id IN (sqlc.slice('service_ids'))
+ORDER BY t.min_arrival_time DESC
+LIMIT 1;
+
+-- name: GetBlockTripIndexIDsForBlocks :many
+-- Get all BlockTripIndex IDs that contain trips from the specified blocks
+SELECT DISTINCT bte.block_trip_index_id
+FROM block_trip_entry bte
+WHERE bte.block_id IN (sqlc.slice('block_ids'))
+  AND bte.service_id IN (sqlc.slice('service_ids'))
+ORDER BY bte.block_trip_index_id;
+
+-- name: GetBlocksForBlockTripIndexIDs :many
+-- Get distinct block_ids whose schedule window overlaps [from_time, to_time] within the
+-- specified BlockTripIndex IDs. Mirrors Java's BlockCalendarServiceImpl.getActiveBlocksInTimeRange,
+-- which binary-searches maxArrivals/minDepartures so "all E blocks" never includes a block
+-- whose trips are hours away from the requested time.
+-- Trips with NULL min_arrival_time / max_departure_time (possible only when a trip has
+-- no stop_times rows) are implicitly excluded: SQL NULL comparisons return UNKNOWN, which
+-- WHERE treats as false. A trip with no stop_times cannot be "active" in any time range.
+SELECT DISTINCT bte.block_id
+FROM block_trip_entry bte
+JOIN trips t ON bte.trip_id = t.id
+WHERE t.max_departure_time >= sqlc.arg('from_time')
+  AND t.min_arrival_time <= sqlc.arg('to_time')
+  AND bte.block_id IS NOT NULL
+  AND bte.block_trip_index_id IN (sqlc.slice('index_ids'))
+  AND bte.service_id IN (sqlc.slice('service_ids'));
+
+-- name: GetActiveTripInBlockAtTime :one
+-- Find the currently active trip in a specific block at the given time
+-- Returns the trip whose stop times contain the current time (with late/early windows)
+-- Orders by departure time ASC to get the EARLIEST matching trip (the one currently in progress)
+SELECT t.id
+FROM trips t
+WHERE t.block_id = sqlc.arg('block_id')
+  AND t.min_arrival_time <= sqlc.arg('current_time')
+  AND t.max_departure_time >= sqlc.arg('current_time')
+  AND t.service_id IN (sqlc.slice('service_ids'))
+ORDER BY t.min_arrival_time ASC
+LIMIT 1;
+
+-- name: GetTripsInBlock :many
+-- Get all trip IDs in a specific block for the given service IDs
+SELECT id
+FROM trips
+WHERE block_id = sqlc.arg('block_id')
+  AND service_id IN (sqlc.slice('service_ids'));
+
+-- name: GetActiveTripsWithNullBlockForRoute :many
+-- Returns null-block trips whose service window overlaps [time_range_start, time_range_end].
+-- Use time_range_start = now - 30 min and time_range_end = now + 10 min to include
+-- recently-completed (running late) trips and upcoming trips, matching Java OBA behavior.
+SELECT t.id
+FROM trips t
+WHERE t.route_id = sqlc.arg('route_id')
+  AND t.block_id IS NULL
+  AND t.min_arrival_time <= sqlc.arg('time_range_end')
+  AND t.max_departure_time >= sqlc.arg('time_range_start')
+  AND t.service_id IN (sqlc.slice('service_ids'))
+ORDER BY t.min_arrival_time ASC;
+
+-- name: GetRoutesInBlockTripIndices :many
+-- Get all unique route IDs that have trips in the specified block_trip_index IDs
+SELECT DISTINCT t.route_id
+FROM trips t
+JOIN block_trip_entry bte ON t.id = bte.trip_id
+WHERE bte.block_trip_index_id IN (sqlc.slice('index_ids'))
+  AND bte.service_id IN (sqlc.slice('service_ids'));
+
+
+-- name: GetShapePointsByIDs :many
+SELECT shape_id, lat, lon, shape_pt_sequence, shape_dist_traveled
+FROM shapes
+WHERE shape_id IN (sqlc.slice('shape_ids'))
+ORDER BY shape_id, shape_pt_sequence;
+
+-- name: GetStopTimesForTripIDs :many
+SELECT * FROM stop_times
+WHERE trip_id IN (sqlc.slice('trip_ids'))
+ORDER BY trip_id, stop_sequence;
+
+-- name: GetTripsByBlockIDs :many
+SELECT
+    t.id,
+    t.route_id,
+    t.service_id,
+    t.trip_headsign,
+    t.trip_short_name,
+    t.direction_id,
+    t.block_id,
+    t.shape_id,
+    t.min_arrival_time,
+    t.max_departure_time
+FROM trips t
+WHERE t.block_id IN (sqlc.slice('block_ids'))
+  AND t.service_id IN (sqlc.slice('service_ids'))
+ORDER BY t.block_id, t.min_arrival_time, t.id;
+
+-- Problem Report Queries
+
+-- name: CreateProblemReportTrip :exec
+INSERT INTO problem_reports_trip (
+    trip_id,
+    service_date,
+    vehicle_id,
+    stop_id,
+    code,
+    user_comment,
+    user_lat,
+    user_lon,
+    user_location_accuracy,
+    user_on_vehicle,
+    user_vehicle_number,
+    created_at,
+    submitted_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: CreateProblemReportStop :exec
+INSERT INTO problem_reports_stop (
+    stop_id,
+    code,
+    user_comment,
+    user_lat,
+    user_lon,
+    user_location_accuracy,
+    created_at,
+    submitted_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- name: GetProblemReportsByTrip :many
+SELECT * FROM problem_reports_trip
+WHERE trip_id = ?
+ORDER BY created_at DESC;
+
+-- name: GetProblemReportsByStop :many
+SELECT * FROM problem_reports_stop
+WHERE stop_id = ?
+ORDER BY created_at DESC;
+
+
+-- name: GetFeedEndDate :one
+SELECT COALESCE(CAST(MAX(max_date) AS TEXT), '') AS feed_end_date
+FROM (
+    SELECT MAX(end_date) AS max_date FROM calendar
+    UNION ALL
+    SELECT MAX(date) AS max_date FROM calendar_dates WHERE exception_type = 1
+);
+
+-- Optimized queries using SQLite window functions
+
+-- name: GetTargetStopTimeWithTotalStops :one
+-- Fetches a specific stop time for a trip+stop, along with the total stop count,
+SELECT
+    st.trip_id,
+    st.arrival_time,
+    st.departure_time,
+    st.stop_id,
+    st.stop_sequence,
+    st.stop_headsign,
+    st.pickup_type,
+    st.drop_off_type,
+    st.shape_dist_traveled,
+    st.timepoint,
+    (SELECT COUNT(*) FROM stop_times st2 WHERE st2.trip_id = @trip_id) AS total_stops
+FROM stop_times st
+WHERE st.trip_id = @trip_id AND st.stop_id = @stop_id
+ORDER BY st.stop_sequence
+LIMIT 1;
+
+-- name: GetTargetStopTimeWithTotalStopsBySequence :one
+-- Fetches a specific stop time for a trip+stop+sequence, along with the total stop count,
+SELECT
+    st.trip_id,
+    st.arrival_time,
+    st.departure_time,
+    st.stop_id,
+    st.stop_sequence,
+    st.stop_headsign,
+    st.pickup_type,
+    st.drop_off_type,
+    st.shape_dist_traveled,
+    st.timepoint,
+    (SELECT COUNT(*) FROM stop_times st2 WHERE st2.trip_id = @trip_id) AS total_stops
+FROM stop_times st
+WHERE st.trip_id = @trip_id AND st.stop_id = @stop_id AND st.stop_sequence = @stop_sequence
+LIMIT 1;
+
+-- name: GetBlockTripSequence :one
+-- Calculates a trip's zero-based index within its block's ordered sequence,
+WITH BlockTrips AS (
+    SELECT id, ROW_NUMBER() OVER (ORDER BY min_arrival_time) - 1 AS seq
+    FROM trips
+    WHERE block_id = @block_id
+      AND service_id IN (sqlc.slice('service_ids'))
+)
+SELECT seq FROM BlockTrips WHERE id = @trip_id;
+
+-- name: GetNextAndPreviousTripsInBlock :one
+-- Uses LAG/LEAD window functions to find prev/next trip IDs in one query,
+WITH NavTrips AS (
+    SELECT
+        id,
+        LAG(id)  OVER (ORDER BY min_arrival_time) AS prev_trip_id,
+        LEAD(id) OVER (ORDER BY min_arrival_time) AS next_trip_id
+    FROM trips
+    WHERE block_id = @block_id
+      AND service_id IN (sqlc.slice('service_ids'))
+)
+SELECT prev_trip_id, next_trip_id
+FROM NavTrips
+WHERE id = @trip_id;
+
+-- name: GetFirstStopOfNextTripInBlock :one
+-- Uses LEAD() to find the next trip and directly fetches its first stop,
+SELECT st.*
+FROM stop_times st
+WHERE st.trip_id = (
+    SELECT next_trip_id FROM (
+        SELECT id, LEAD(id) OVER (ORDER BY min_arrival_time) AS next_trip_id
+        FROM trips
+        WHERE block_id = @block_id
+          AND service_id IN (sqlc.slice('service_ids'))
+    ) WHERE id = @trip_id
+)
+ORDER BY st.stop_sequence ASC
+LIMIT 1;
+
+-- name: GetStopBoundsPerAgency :many
+SELECT
+    r.agency_id,
+    COUNT(*) AS cnt,
+    CAST(MIN(s.lat) AS REAL) AS min_lat,
+    CAST(MAX(s.lat) AS REAL) AS max_lat,
+    CAST(MIN(s.lon) AS REAL) AS min_lon,
+    CAST(MAX(s.lon) AS REAL) AS max_lon
+FROM
+    routes r
+    JOIN trips t ON t.route_id = r.id
+    JOIN stop_times st ON st.trip_id = t.id
+    JOIN stops s ON s.id = st.stop_id
+GROUP BY
+    r.agency_id;
+
+
